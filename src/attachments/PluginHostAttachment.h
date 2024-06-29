@@ -134,14 +134,30 @@ namespace timeoffaudio {
                                 buildPluginDescriptionValue (plugin->instance->getPluginDescription());
 
                             pluginInstanceValue.addMember ("key", key);
-                            pluginInstanceValue.addMember (
-                                "parameters", buildPluginParametersListValue (key, plugin->instance.get()));
-
                             pluginInstancesValue.addArrayElement (pluginInstanceValue);
                         }
                     });
 
                     return pluginInstancesValue;
+                });
+
+            webViewManager.bind (
+                "juce_getPluginInstanceParameters", [&] (const choc::value::ValueView& args) -> choc::value::Value {
+                    auto key                      = args[0].toString();
+                    auto pluginInstanceParameters = choc::value::createEmptyArray();
+
+                    pluginHost.withReadOnlyAccess ([&] (const PluginHost::PluginMap& pluginInstances) {
+                        auto pluginBox = pluginInstances.find (key);
+                        if (!pluginBox) return;
+
+                        auto pluginInstance = pluginBox->get().instance.get();
+                        if (!pluginInstance) return;
+
+                        pluginInstanceParameters =
+                                buildPluginParametersListValue (key, pluginInstance);
+                    });
+
+                    return pluginInstanceParameters;
                 });
 
             webViewManager.bind (
@@ -247,8 +263,7 @@ namespace timeoffaudio {
 
                     if (auto parameter = pluginHost.getParameters (key)[(int) paramIndex])
                         value = parameter->getValue();
-                    if (args.size() > 2 && !args[2].isVoid())
-                        value = args[2].getWithDefault (0.f);
+                    if (args.size() > 2 && !args[2].isVoid()) value = args[2].getWithDefault (0.f);
 
                     auto displayValue = choc::value::createObject ("DisplayValue");
                     displayValue.addMember ("value",
