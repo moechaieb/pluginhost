@@ -27,6 +27,7 @@ namespace timeoffaudio {
                 juce::AudioPluginInstance* /*plugin*/) {}
             virtual void pluginInstanceLoadFailed (PluginHost::KeyType /*uuid*/, std::string /*error*/) {}
             virtual void pluginInstanceUpdated (PluginHost::KeyType /*uuid*/, juce::AudioPluginInstance* /*plugin*/) {}
+            // TODO: actually call this callback as it;'s currently not in use
             virtual void pluginInstanceDeleted (PluginHost::KeyType /*uuid*/, juce::AudioPluginInstance* /*plugin*/) {}
             virtual void pluginInstanceParameterChanged (PluginHost::KeyType /*uuid*/,
                 int /*parameterIndex*/,

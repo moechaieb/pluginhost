@@ -63,8 +63,8 @@ namespace timeoffaudio {
         }
 
         void pluginInstanceParameterChanged (PluginHost::KeyType uuid, int parameterIndex, float newValue) override {
-            this->webViewManager.evaluateJavascript ("window.ui.onPluginInstanceParameterUpdated('" + uuid + "',"
-                                                     + std::to_string (parameterIndex) + ", "
+            auto hostedParameterKey = uuid + "." + std::to_string(parameterIndex);
+            this->webViewManager.evaluateJavascript ("window.ui.onPluginInstanceParameterUpdated('" + hostedParameterKey + "',"
                                                      + std::to_string (newValue) + ")");
         }
 
@@ -230,44 +230,52 @@ namespace timeoffaudio {
 
             webViewManager.bind ("juce_startPluginInstanceParameterGesture",
                 [&] (const choc::value::ValueView& args) -> choc::value::Value {
-                    auto key        = args[0].toString();
-                    auto paramIndex = args[1].getInt64();
-                    pluginHost.beginChangeGestureForParameter (key, (int) paramIndex);
+                    auto paramKey        = args[0].toString();
+                    auto splittedParamKey = choc::text::splitString(paramKey, '.', false);
+                    auto pluginKey = splittedParamKey[0];
+                    auto paramIndex = std::stoi(splittedParamKey.at(1));
+                    pluginHost.beginChangeGestureForParameter (pluginKey, (int) paramIndex);
                     return {};
                 });
 
             webViewManager.bind ("juce_endPluginInstanceParameterGesture",
                 [&] (const choc::value::ValueView& args) -> choc::value::Value {
-                    auto key        = args[0].toString();
-                    auto paramIndex = args[1].getInt64();
-                    pluginHost.endChangeGestureForParameter (key, (int) paramIndex);
+                    auto paramKey        = args[0].toString();
+                    auto splittedParamKey = choc::text::splitString(paramKey, '.', false);
+                    auto pluginKey = splittedParamKey[0];
+                    auto paramIndex = std::stoi(splittedParamKey.at(1));
+                    pluginHost.endChangeGestureForParameter (pluginKey, (int) paramIndex);
                     return {};
                 });
 
             webViewManager.bind (
                 "juce_updatePluginInstanceParameter", [&] (const choc::value::ValueView& args) -> choc::value::Value {
-                    auto key        = args[0].toString();
-                    auto paramIndex = args[1].getInt64();
-                    auto value      = args[2].getFloat64();
+                    auto paramKey        = args[0].toString();
+                    auto splittedParamKey = choc::text::splitString(paramKey, '.', false);
+                    auto pluginKey = splittedParamKey[0];
+                    auto paramIndex = std::stoi(splittedParamKey.at(1));
+                    auto value      = args[1].getFloat64();
 
-                    pluginHost.setValueForParameter (key, (int) paramIndex, (float) value);
+                    pluginHost.setValueForParameter (pluginKey, (int) paramIndex, (float) value);
 
                     return choc::value::Value (value);
                 });
 
             webViewManager.bind ("juce_getPluginInstanceParameterDisplayValue",
                 [&] (const choc::value::ValueView& args) -> choc::value::Value {
-                    auto key        = args[0].toString();
-                    auto paramIndex = args[1].getInt64();
+                    auto paramKey        = args[0].toString();
+                    auto splittedParamKey = choc::text::splitString(paramKey, '.', false);
+                    auto pluginKey = splittedParamKey[0];
+                    auto paramIndex = std::stoi(splittedParamKey.at(1));
                     auto value      = 0.f;
 
-                    if (auto parameter = pluginHost.getParameters (key)[(int) paramIndex])
+                    if (auto parameter = pluginHost.getParameters (pluginKey)[(int) paramIndex])
                         value = parameter->getValue();
-                    if (args.size() > 2 && !args[2].isVoid()) value = args[2].getWithDefault (0.f);
+                    if (args.size() > 1 && !args[1].isVoid()) value = args[1].getWithDefault (0.f);
 
                     auto displayValue = choc::value::createObject ("DisplayValue");
                     displayValue.addMember ("value",
-                        pluginHost.getDisplayValueForParameter (key, (int) paramIndex, (float) value).toStdString());
+                        pluginHost.getDisplayValueForParameter (pluginKey, (int) paramIndex, (float) value).toStdString());
 
                     return displayValue;
                 });
@@ -332,13 +340,11 @@ namespace timeoffaudio {
             const juce::AudioProcessorParameter& pluginParameter) {
             auto result = choc::value::createObject ("Parameter");
 
-            auto parameterKey = choc::value::createObject ("ParameterKey");
-            parameterKey.addMember ("pluginKey", key);
-            parameterKey.addMember ("parameterIndex", pluginParameter.getParameterIndex());
-            result.addMember ("uid", parameterKey);
+            auto hostedParameterKey = key + "." + std::to_string(pluginParameter.getParameterIndex());
+            result.addMember ("uid", hostedParameterKey);
             result.addMember ("name", pluginParameter.getName (1024).toStdString());
-            result.addMember ("value", pluginParameter.getValue());
-            result.addMember ("defaultValue", pluginParameter.getDefaultValue());
+            result.addMember ("value01", pluginParameter.getValue());
+            result.addMember ("defaultVal01", pluginParameter.getDefaultValue());
             result.addMember ("normalizedStep", (1.0 / (pluginParameter.getNumSteps() - 1)));
 
             auto range = choc::value::createObject ("Range");
