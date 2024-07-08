@@ -361,9 +361,20 @@ namespace timeoffaudio {
     }
 
     const juce::Array<juce::AudioProcessorParameter*> PluginHost::getParameters (KeyType key) const {
-        // TODO: exclude BS parameters that some plugins "advertise" like midi-cc
-        // Find a heuristic to do that, i.e. param name starts with "midi cc", etc
-        if (auto pluginBox = plugins.find (key)) return pluginBox->get().instance->getParameters();
+        // Filter out parameters that start with "midi cc", "internal", or "bypass", etc
+        if (auto pluginBox = plugins.find (key)) {
+            auto parameters = pluginBox->get().instance->getParameters();
+
+            parameters.removeIf([] (juce::AudioProcessorParameter* param) {
+                for (auto prefix : {"midi cc", "internal", "bypass", "reserved"})
+                    if (param->getName(1024).toLowerCase().startsWith(prefix)) return true;
+
+                return false;
+            });
+
+            return parameters;
+        }
+
         return {};
     }
 

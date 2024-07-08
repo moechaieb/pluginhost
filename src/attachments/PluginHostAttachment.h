@@ -330,8 +330,20 @@ namespace timeoffaudio {
             auto result = choc::value::createEmptyArray();
             if (!pluginInstance) return result;
 
-            for (auto param : pluginInstance->getParameters())
+            // Filter out parameters that start with "midi cc", "internal", or "bypass", etc
+            for (auto param : pluginInstance->getParameters()) {
+                auto skip = false;
+
+                for (auto prefix : {"midi cc", "internal", "bypass"})
+                    if (param->getName(1024).toLowerCase().startsWith(prefix)) {
+                        skip = true;
+                        break;
+                    }
+
+                if (skip) continue;
+
                 result.addArrayElement (buildPluginParameterValue (key, *param));
+            }
 
             return result;
         }
