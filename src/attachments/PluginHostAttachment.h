@@ -8,8 +8,8 @@
 namespace timeoffaudio {
     class PluginHostAttachment : public imagiro::WebUIAttachment, private timeoffaudio::PluginHost::Listener {
     public:
-        PluginHostAttachment (imagiro::WebProcessor& p, imagiro::WebViewManager& w, timeoffaudio::PluginHost& h)
-            : imagiro::WebUIAttachment (p, w), pluginHost (h) {}
+        PluginHostAttachment (imagiro::WebProcessor& p, timeoffaudio::PluginHost& h)
+            : imagiro::WebUIAttachment (p, p.getWebViewManager()), pluginHost (h) {}
 
         void addListeners() override { pluginHost.addPluginHostListener (this); }
 
