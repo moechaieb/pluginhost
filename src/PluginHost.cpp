@@ -44,7 +44,11 @@ namespace timeoffaudio {
     void PluginHost::deletePluginInstance (KeyType key) {
         withWriteAccess ([&] (TransientPluginMap& pluginMap) { deletePluginInstance (pluginMap, key); });
     }
-    void PluginHost::deletePluginInstance (TransientPluginMap& pluginMap, KeyType key) { pluginMap.erase (key); }
+    void PluginHost::deletePluginInstance (TransientPluginMap& pluginMap, KeyType key) {
+        auto instance = pluginMap[key]->instance.get();
+        pluginMap.erase (key);
+        listeners.call (&Listener::pluginInstanceDeleted, key, instance);
+    }
 
     void PluginHost::movePluginInstance (KeyType fromKey, KeyType toKey) {
         withWriteAccess ([&] (TransientPluginMap& pluginMap) { movePluginInstance (pluginMap, fromKey, toKey); });
@@ -365,9 +369,9 @@ namespace timeoffaudio {
         if (auto pluginBox = plugins.find (key)) {
             auto parameters = pluginBox->get().instance->getParameters();
 
-            parameters.removeIf([] (juce::AudioProcessorParameter* param) {
-                for (auto prefix : {"midi cc", "internal", "bypass", "reserved"})
-                    if (param->getName(1024).toLowerCase().startsWith(prefix)) return true;
+            parameters.removeIf ([] (juce::AudioProcessorParameter* param) {
+                for (auto prefix : { "midi cc", "internal", "bypass", "reserved" })
+                    if (param->getName (1024).toLowerCase().startsWith (prefix)) return true;
 
                 return false;
             });
@@ -396,23 +400,19 @@ namespace timeoffaudio {
     }
 
     void PluginHost::beginChangeGestureForParameter (KeyType key, int parameterIndex) {
-        if(auto parameter = getParameter(key, parameterIndex))
-            parameter->beginChangeGesture();
+        if (auto parameter = getParameter (key, parameterIndex)) parameter->beginChangeGesture();
     }
 
     void PluginHost::endChangeGestureForParameter (KeyType key, int parameterIndex) {
-        if(auto parameter = getParameter(key, parameterIndex))
-            parameter->endChangeGesture();
+        if (auto parameter = getParameter (key, parameterIndex)) parameter->endChangeGesture();
     }
 
     void PluginHost::setValueForParameter (KeyType key, int parameterIndex, float value) {
-        if(auto parameter = getParameter(key, parameterIndex))
-            parameter->setValue(value);
+        if (auto parameter = getParameter (key, parameterIndex)) parameter->setValue (value);
     }
 
     juce::String PluginHost::getDisplayValueForParameter (KeyType key, int parameterIndex, float value) {
-        if(auto parameter = getParameter(key, parameterIndex))
-            return parameter->getText(value, 1024);
+        if (auto parameter = getParameter (key, parameterIndex)) return parameter->getText (value, 1024);
 
         return {};
     }
@@ -428,10 +428,7 @@ namespace timeoffaudio {
             // figure out how to get the key from the PluginMap without scanning the whole map
             for (auto [key, pluginBox] : pluginMap) {
                 if (pluginBox.get().instance.get() == pluginInstance) {
-                    listeners.call (&Listener::pluginInstanceParameterChanged,
-                        key,
-                        parameterIndex,
-                        newValue);
+                    listeners.call (&Listener::pluginInstanceParameterChanged, key, parameterIndex, newValue);
 
                     break;
                 }
