@@ -237,6 +237,16 @@ namespace timeoffaudio {
         sampleRate = newSampleRate;
         blockSize  = newBlockSize;
         playhead   = newPlayhead;
+
+        withReadOnlyAccess ([&] (const PluginMap& pluginMap) {
+            for (auto& [key, pluginBox] : pluginMap) {
+                auto instance = pluginBox.get().instance.get();
+
+                instance->enableAllBuses();
+                instance->prepareToPlay (sampleRate, blockSize);
+                if (playhead) instance->setPlayHead (playhead);
+            }
+        });
     }
 
     void PluginHost::openPluginWindow (TransientPluginMap& pluginMap, std::string key, int xPos, int yPos) {
@@ -439,4 +449,26 @@ namespace timeoffaudio {
     void PluginHost::audioProcessorParameterChangeGestureBegin (juce::AudioProcessor*, int) {}
     void PluginHost::audioProcessorParameterChangeGestureEnd (juce::AudioProcessor*, int) {}
     void PluginHost::audioProcessorChanged (juce::AudioProcessor*, const juce::AudioProcessor::ChangeDetails&) {}
+
+    void PluginHost::debugPrintState() const {
+        DBG ("=============================== Plugin Host State ===============================");
+        withReadOnlyAccess ([&] (const PluginMap& pluginMap) {
+            DBG ("Number of plugins: " + juce::String (pluginMap.size()));
+            for (auto [key, pluginBox] : pluginMap) {
+                if (auto instance = pluginBox.get().instance) {
+                    DBG ("Plugin at key " + std::string (key) + " is " + instance->getName().toStdString());
+                    DBG ("Plugin num input channels: " + juce::String (instance->getTotalNumInputChannels()));
+                    DBG ("Plugin num output channels: " + juce::String (instance->getTotalNumOutputChannels()));
+                    DBG ("Plugin input bus count: " + juce::String (instance->getBusCount (true)));
+                    DBG ("Plugin output bus count: " + juce::String (instance->getBusCount (false)));
+
+                    DBG ("Plugin main bus num input channels: " + juce::String (instance->getMainBusNumInputChannels()));
+                    DBG ("Plugin main bus num output channels: " + juce::String (instance->getMainBusNumOutputChannels()));
+                }
+                else
+                    DBG ("Plugin at key " + std::string (key) + " is empty");
+            }
+        });
+        DBG ("=================================================================================");
+    }
 }

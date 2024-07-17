@@ -143,6 +143,8 @@ namespace timeoffaudio {
         void audioProcessorParameterChangeGestureBegin (juce::AudioProcessor* processor, int parameterIndex) override;
         void audioProcessorParameterChangeGestureEnd (juce::AudioProcessor* processor, int parameterIndex) override;
 
+        void debugPrintState() const;
+
     protected:
         juce::KnownPluginList knownPlugins;
         std::unique_ptr<timeoffaudio::PluginScan> currentScan { nullptr };
