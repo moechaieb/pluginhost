@@ -58,15 +58,46 @@ namespace timeoffaudio {
         if (fromKey == toKey) return;
         if (!pluginMap.find (fromKey)) return;
 
+        auto fromPluginEnabled = pluginMap[fromKey]->enabledParameter->getValue();
+
         if (pluginMap.find (toKey)) {
-            // Swap the plugin instances, if the destination key is already in use
-            auto to = pluginMap[toKey];
-            pluginMap.set (toKey, pluginMap[fromKey]);
-            pluginMap.set (fromKey, to);
+            // Swap the plugin instances and windows, if the destination key is already in use
+            // Make sure to preserve the linked params by key, and only swap their values
+            auto toPluginBox     = pluginMap[toKey];
+            auto toPluginEnabled = toPluginBox->enabledParameter->getValue();
+
+            pluginMap.update (toKey, [&] (auto pluginBox) {
+                return pluginBox.update ([&] (auto plugin) {
+                    plugin.instance = pluginMap[fromKey]->instance;
+                    plugin.window   = pluginMap[fromKey]->window;
+                    plugin.enabledParameter = getEnabledParameterForKey (toKey);
+                    plugin.enabledParameter->setValueAndNotifyHost (fromPluginEnabled);
+                    return plugin;
+                });
+            });
+
+            pluginMap.update (fromKey, [&] (auto pluginBox) {
+                return pluginBox.update ([&] (auto plugin) {
+                    plugin.instance = toPluginBox->instance;
+                    plugin.window   = toPluginBox->window;
+                    plugin.enabledParameter = getEnabledParameterForKey (fromKey);
+                    plugin.enabledParameter->setValueAndNotifyHost (toPluginEnabled);
+                    return plugin;
+                });
+            });
         } else {
             // If the destination key is free,
-            // move the plugin instance to the destination key, and clear the source key
-            pluginMap.set (toKey, pluginMap[fromKey]);
+            // move the plugin instance and window to the destination key, and clear the source key
+            pluginMap.update (toKey, [&] (auto pluginBox) {
+                return pluginBox.update ([&] (auto plugin) {
+                    plugin.instance = pluginMap[fromKey]->instance;
+                    plugin.window   = pluginMap[fromKey]->window;
+                    plugin.enabledParameter = getEnabledParameterForKey (toKey);
+                    plugin.enabledParameter->setValueAndNotifyHost (fromPluginEnabled);
+                    return plugin;
+                });
+            });
+
             pluginMap.erase (fromKey);
         }
     }
@@ -105,7 +136,8 @@ namespace timeoffaudio {
                     instance->setStateInformation (initialState.getData(), (int) initialState.getSize());
                 instance->addListener (this);
 
-                pluginMap.set (key, immer::box<Plugin> (std::move (instance), nullptr));
+                pluginMap.set (
+                    key, immer::box<Plugin> (std::move (instance), nullptr, getEnabledParameterForKey (key)));
 
                 // Finally, notify all the listeners
                 // TODO: this is technically inconsistent aas we are notifying listeners about
@@ -139,7 +171,7 @@ namespace timeoffaudio {
         // immer::diff (plugins,
         //     transientPlugins.persistent(),
         //     immer::make_differ ([] (const auto& added) { /* handle added elements */ },
-        //         [] (const auto& removed) { /* handle removed elements */ },
+        //         [] (const auto& removed) { /* handle removed elements */ },π
         //         [] (const auto& changed) { /* handle changed elements */ }));
 
         for (auto& [key, pluginBox] : transientPlugins) {
@@ -230,6 +262,23 @@ namespace timeoffaudio {
             }
 
             listeners.call (&Listener::availablePluginsUpdated, knownPlugins.getTypes());
+        }
+    }
+
+    void PluginHost::process (const Plugin& plugin, juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages) {
+        auto instance        = plugin.instance.get();
+        auto bypassParameter = instance->getBypassParameter();
+        bool isEnabled       = plugin.enabledParameter->getValue() == 1.f;
+
+        if (!isEnabled && !bypassParameter) {
+            // When getBypassParameter() returns a nullptr, we need to bypass the plugin
+            // by calling processBlockBypassed
+            instance->processBlockBypassed (buffer, midiMessages);
+        } else {
+            // When getBypassParameter() returns a valid pointer, we need to
+            // set the bypass parameter, and process the plugin normally via processBlock
+            bypassParameter->setValue (!isEnabled);
+            instance->processBlock (buffer, midiMessages);
         }
     }
 
@@ -455,17 +504,23 @@ namespace timeoffaudio {
         withReadOnlyAccess ([&] (const PluginMap& pluginMap) {
             DBG ("Number of plugins: " + juce::String (pluginMap.size()));
             for (auto [key, pluginBox] : pluginMap) {
-                if (auto instance = pluginBox.get().instance) {
+                if (auto instance = pluginBox->instance) {
                     DBG ("Plugin at key " + std::string (key) + " is " + instance->getName().toStdString());
+                    if (auto enabledParam = pluginBox->enabledParameter) {
+                        DBG ("Plugin linked enabled parameter UID: " + juce::String (enabledParam->getUID()));
+                        DBG ("Plugin linked enabled parameter name: " + juce::String (enabledParam->getName (1024)));
+                        DBG ("Plugin linked enabled parameter value: " + juce::String (enabledParam->getValue()));
+                    }
                     DBG ("Plugin num input channels: " + juce::String (instance->getTotalNumInputChannels()));
                     DBG ("Plugin num output channels: " + juce::String (instance->getTotalNumOutputChannels()));
                     DBG ("Plugin input bus count: " + juce::String (instance->getBusCount (true)));
                     DBG ("Plugin output bus count: " + juce::String (instance->getBusCount (false)));
 
-                    DBG ("Plugin main bus num input channels: " + juce::String (instance->getMainBusNumInputChannels()));
-                    DBG ("Plugin main bus num output channels: " + juce::String (instance->getMainBusNumOutputChannels()));
-                }
-                else
+                    DBG (
+                        "Plugin main bus num input channels: " + juce::String (instance->getMainBusNumInputChannels()));
+                    DBG ("Plugin main bus num output channels: "
+                         + juce::String (instance->getMainBusNumOutputChannels()));
+                } else
                     DBG ("Plugin at key " + std::string (key) + " is empty");
             }
         });

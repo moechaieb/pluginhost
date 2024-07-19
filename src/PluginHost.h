@@ -39,22 +39,31 @@ namespace timeoffaudio {
 
             std::shared_ptr<juce::AudioPluginInstance> instance;
             std::shared_ptr<PluginWindow> window;
+            imagiro::Parameter* enabledParameter;
             ConnectionList connections;
 
             Plugin() = default;
 
             // Copy constructor
             Plugin (const Plugin& other)
-                : instance (other.instance), window (other.window), connections (other.connections) {}
+                : instance (other.instance),
+                  window (other.window),
+                  enabledParameter (other.enabledParameter),
+                  connections (other.connections) {}
 
             // Move constructor
             Plugin (Plugin&& other) noexcept
                 : instance (std::move (other.instance)),
                   window (std::move (other.window)),
+                  enabledParameter (other.enabledParameter),
                   connections (std::move (other.connections)) {}
 
-            Plugin (std::shared_ptr<juce::AudioPluginInstance> inst, std::shared_ptr<PluginWindow> win)
-                : instance (std::move (inst)), window (std::move (win)) {}
+            Plugin (std::shared_ptr<juce::AudioPluginInstance> inst,
+                std::shared_ptr<PluginWindow> win,
+                imagiro::Parameter* enabledParameter)
+                : instance (std::move (inst)),
+                  window (std::move (win)),
+                  enabledParameter (enabledParameter) {}
         };
 
         using PluginMap          = immer::map<KeyType, immer::box<Plugin>>;
@@ -65,6 +74,8 @@ namespace timeoffaudio {
         PluginHost (ConnectionsRefresh connectionFactory =
                         [] (KeyType, const TransientPluginMap&) -> Plugin::ConnectionList { return {}; });
         ~PluginHost() override;
+
+        void process (const Plugin& plugin, juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages);
 
         void addPluginHostListener (Listener* listener);
         void removePluginHostListener (Listener* listener);
@@ -130,7 +141,7 @@ namespace timeoffaudio {
         void bringPluginWindowToFront (TransientPluginMap&, KeyType key);
 
         // Plugin parameters
-        const juce::Array<juce::AudioProcessorParameter*> getParameters(KeyType key) const;
+        const juce::Array<juce::AudioProcessorParameter*> getParameters (KeyType key) const;
         void beginChangeGestureForParameter (KeyType key, int parameterIndex);
         void endChangeGestureForParameter (KeyType key, int parameterIndex);
         void setValueForParameter (KeyType key, int parameterIndex, float value);
@@ -156,6 +167,10 @@ namespace timeoffaudio {
 
         void loadPluginFromState (TransientPluginMap& pluginMap, const choc::value::Value pluginState);
         void loadAllPluginsFromState (choc::value::Value allPluginsState);
+
+        virtual imagiro::Parameter* getEnabledParameterForKey (KeyType key) {
+            return nullptr;
+        }
 
     private:
         int sampleRate;
