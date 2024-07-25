@@ -183,7 +183,6 @@ namespace timeoffaudio {
                         for (auto keyUpdate : keyUpdateList)
                             pluginHost.movePluginInstance (
                                 plugins, keyUpdate["fromKey"].toString(), keyUpdate["toKey"].toString());
-
                     });
 
                     return {};
@@ -358,18 +357,19 @@ namespace timeoffaudio {
             result.addMember ("name", pluginParameter.getName (1024).toStdString());
             result.addMember ("value01", pluginParameter.getValue());
             result.addMember ("defaultVal01", pluginParameter.getDefaultValue());
-            result.addMember ("normalizedStep", (1.0 / (pluginParameter.getNumSteps() - 1)));
+            result.setMember("configIndex", 0);
 
-            auto range = choc::value::createObject ("Range");
-            range.addMember ("min", 0);
-            range.addMember ("max", 1);
-            range.addMember ("step", 1.0 / (pluginParameter.getNumSteps() - 1));
-            result.addMember ("range", range);
+            auto configsArray = choc::value::createEmptyArray();
+            auto defaultConfig = choc::value::createObject ("HostedPluginDefaultConfig");
+            defaultConfig.setMember ("name", pluginParameter.getName (1024).toStdString());
 
-            auto choices = choc::value::createEmptyArray();
-            for (auto valueString : pluginParameter.getAllValueStrings())
-                choices.addArrayElement (valueString.toStdString());
-            result.addMember ("choices", choices);
+            auto choicesArray = choc::value::createEmptyArray();
+            for (const auto& choice : pluginParameter.getAllValueStrings())
+                choicesArray.addArrayElement (choice.toStdString());
+
+            defaultConfig.setMember ("choices", choicesArray);
+            configsArray.addArrayElement (defaultConfig);
+            result.setMember("configs", configsArray);
 
             return result;
         }
