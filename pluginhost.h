@@ -4,4 +4,3 @@
 #include "src/PluginHost.h"
 #include "src/PluginScan.h"
 #include "src/PluginWindow.h"
-#include "src/attachments/PluginHostAttachment.h"

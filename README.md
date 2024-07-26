@@ -8,7 +8,6 @@ The architecture of the plugin host revolves around several key classes and func
 
 - **PluginHost**: Manages the lifecycle and operations of audio plugins.
 - **PluginScan**: Handles the scanning of available plugins and manages asynchronous loading.
-- **PluginHostAttachment**: Integrates the plugin host with web-based interfaces, allowing for remote control and monitoring.
 - **Plugin**: Represents a single plugin instance with associated functionalities like window management and parameter control.
 
 ### usage
@@ -80,44 +79,6 @@ The `PluginHost::Listener` interface provides a set of callbacks that allow for 
 - **pluginInstanceParameterChanged**: Fired when a parameter within a plugin instance changes. It reports the unique identifier of the plugin, the index of the parameter that changed, and the new value. This is essential for keeping UI elements like sliders or knobs in sync with the plugin's state.
 
 These callbacks form a comprehensive system for managing and responding to events within the plugin host, ensuring that applications can maintain accurate and up-to-date information about their plugins and react promptly to changes.
-
-### plugin host attachment (for imagiro_webview)
-
-The `PluginHostAttachment` class facilitates the integration of the plugin host with a web view, specifically through the `imagiro_webview`. It provides methods to bind JavaScript functions for real-time interaction with the plugin host from a web interface.
-
-```tsx
-type JUCEPromise<T> = Promise<{ data?: T, error?: string, status: 'ok' | 'error' }>
-
-// Plugin Discovery
-declare function juce_startPluginScan(pluginFormat: string): JUCEPromise<void>;
-declare function juce_abortOngoingPluginScan(): JUCEPromise<void>;
-declare function juce_getInProgressScanStatus(): JUCEPromise<any>;
-declare function juce_getAvailablePluginFormats(): JUCEPromise<string[]>;
-declare function juce_getAvailablePlugins(): JUCEPromise<any>;
-declare function juce_clearAllAvailablePlugins(): JUCEPromise<void>;
-declare function juce_clearAvailablePlugins(pluginsToClear: {
-    name: string
-    format: 'AudioUnit' | 'VST3'
-    company: string
-    version: string
-}[]): JUCEPromise<void>;
-
-// Plugin Instance Management
-declare function juce_getPluginInstances(): JUCEPromise<any[]>;
-declare function juce_requestToLoadPlugin(pluginToLoad: any, key: string): JUCEPromise<void>;
-declare function juce_deletePluginInstanceAndUpdateKeys(key: string, keyUpdateList: { fromKey: string, toKey: string }[]): JUCEPromse<void>;
-declare function juce_updatePluginInstanceKey(oldKey: any, newKey: any): JUCEPromise<void>;
-
-// Plugin Window Management
-declare function juce_openPluginInstanceWindow(key: string, xPos?: number, yPos?: number): JUCEPromise<void>;
-declare function juce_highlightPluginWindow(key: string, colour?: string): JUCEPromise<void>;
-
-// Plugin Parameter Management
-declare function juce_startPluginInstanceParameterGesture(key: string, paramIndex: number): JUCEPromise<void>;
-declare function juce_endPluginInstanceParameterGesture(key: string, paramIndex: number): JUCEPromise<void>;
-declare function juce_updatePluginInstanceParameter(key: string, paramIndex: number, value: number): JUCEPromise<number>;
-declare function juce_getPluginInstanceParameterDisplayValue(key: string, paramIndex: number, value?: number): JUCEPromise<{ value: string, suffix: string }>;
-```
 
 ### plugin discovery
 
