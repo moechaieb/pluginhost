@@ -9,7 +9,7 @@
 #include <memory>
 
 namespace timeoffaudio {
-    PluginHost::PluginHost (ConnectionsRefresh cF) : getConnectionsFor (cF) {
+    PluginHost::PluginHost (ConnectionsRefreshFn cF) : getConnectionsFor (cF) {
         knownPlugins.setCustomScanner (std::make_unique<timeoffaudio::CustomPluginScanner>());
         // TODO: extract this to a config file that gets passed in
         if (auto savedPluginList = Resources::getInstance()->getConfigFile()->getXmlValue ("pluginList"))
@@ -45,9 +45,7 @@ namespace timeoffaudio {
         withWriteAccess ([&] (TransientPluginMap& pluginMap) { deletePluginInstance (pluginMap, key); });
     }
     void PluginHost::deletePluginInstance (TransientPluginMap& pluginMap, KeyType key) {
-        auto instance = pluginMap[key]->instance.get();
         pluginMap.erase (key);
-        listeners.call (&Listener::pluginInstanceDeleted, key, instance);
     }
 
     void PluginHost::movePluginInstance (KeyType fromKey, KeyType toKey) {
@@ -68,8 +66,8 @@ namespace timeoffaudio {
 
             pluginMap.update (toKey, [&] (auto pluginBox) {
                 return pluginBox.update ([&] (auto plugin) {
-                    plugin.instance = pluginMap[fromKey]->instance;
-                    plugin.window   = pluginMap[fromKey]->window;
+                    plugin.instance         = pluginMap[fromKey]->instance;
+                    plugin.window           = pluginMap[fromKey]->window;
                     plugin.enabledParameter = getEnabledParameterForKey (toKey);
                     plugin.enabledParameter->setValueAndNotifyHost (fromPluginEnabled);
                     return plugin;
@@ -78,8 +76,8 @@ namespace timeoffaudio {
 
             pluginMap.update (fromKey, [&] (auto pluginBox) {
                 return pluginBox.update ([&] (auto plugin) {
-                    plugin.instance = toPluginBox->instance;
-                    plugin.window   = toPluginBox->window;
+                    plugin.instance         = toPluginBox->instance;
+                    plugin.window           = toPluginBox->window;
                     plugin.enabledParameter = getEnabledParameterForKey (fromKey);
                     plugin.enabledParameter->setValueAndNotifyHost (toPluginEnabled);
                     return plugin;
@@ -90,8 +88,8 @@ namespace timeoffaudio {
             // move the plugin instance and window to the destination key, and clear the source key
             pluginMap.update (toKey, [&] (auto pluginBox) {
                 return pluginBox.update ([&] (auto plugin) {
-                    plugin.instance = pluginMap[fromKey]->instance;
-                    plugin.window   = pluginMap[fromKey]->window;
+                    plugin.instance         = pluginMap[fromKey]->instance;
+                    plugin.window           = pluginMap[fromKey]->window;
                     plugin.enabledParameter = getEnabledParameterForKey (toKey);
                     plugin.enabledParameter->setValueAndNotifyHost (fromPluginEnabled);
                     return plugin;
@@ -139,16 +137,6 @@ namespace timeoffaudio {
                 pluginMap.set (
                     key, immer::box<Plugin> (std::move (instance), nullptr, getEnabledParameterForKey (key)));
 
-                // Finally, notify all the listeners
-                // TODO: this is technically inconsistent aas we are notifying listeners about
-                // this plugin being loaded at this key, but plugin instance is not yet accessible
-                // via the pluginMap until the TransientPluginMap is persisted, which is done sometime
-                // after this function returns... If a downstream listener tries to fetch the key
-                // via the plugin map and not via the supplied pointer, it will get a nullptr value
-                // tl;dr we need to send this notification after the PluginMap is fully persisted
-                // OR decouple the notification from persistence and actually only send the
-                // PluginHost::Plugin which needs a key attribute on it
-                listeners.call (&Listener::pluginInstanceLoadSuccessful, key, pluginMap[key]->instance.get());
                 juce::Analytics::getInstance()->logEvent ("plugin_load", logParameters);
 
                 break;
@@ -159,11 +147,12 @@ namespace timeoffaudio {
     template <>
     void PluginHost::withWriteAccess<PluginHost::PostUpdateAction::RefreshConnections> (
         std::function<void (TransientPluginMap&)> mutator) {
-        auto transientPlugins = plugins.transient();
+        const auto previousPlugins  = plugins;
+        auto transientPlugins = previousPlugins.transient();
         mutator (transientPlugins);
 
         // Re-compute the connections after the plugin map is altered each time
-        // TODO: Can be optimised:
+        // TODO: Can be optimised via a another custom differ:
         // 1. If only plugin windows are altered, don't refresh connections
         // 2. If a new plugin is loaded, only refresh connections for that plugin
         // 3. If a plugin is removed, refresh connections for all plugins
@@ -182,14 +171,17 @@ namespace timeoffaudio {
         }
 
         plugins = transientPlugins.persistent();
+        diffAndNotifyListeners (previousPlugins, plugins);
     }
 
     template <>
     void PluginHost::withWriteAccess<PluginHost::PostUpdateAction::None> (
         std::function<void (TransientPluginMap&)> mutator) {
-        auto transientPlugins = plugins.transient();
+        const auto previousPlugins  = plugins;
+        auto transientPlugins = previousPlugins.transient();
         mutator (transientPlugins);
         plugins = transientPlugins.persistent();
+        diffAndNotifyListeners (previousPlugins, plugins);
     }
 
     void PluginHost::withWriteAccess (std::function<void (TransientPluginMap&)> mutator) {
@@ -459,15 +451,18 @@ namespace timeoffaudio {
     }
 
     void PluginHost::beginChangeGestureForParameter (KeyType key, int parameterIndex) {
-        if (auto parameter = getParameter (key, parameterIndex)) parameter->beginChangeGesture();
+        if (auto parameter = getParameter (key, parameterIndex)) return parameter->beginChangeGesture();
+        // TODO: add error notification here
     }
 
     void PluginHost::endChangeGestureForParameter (KeyType key, int parameterIndex) {
-        if (auto parameter = getParameter (key, parameterIndex)) parameter->endChangeGesture();
+        if (auto parameter = getParameter (key, parameterIndex)) return parameter->endChangeGesture();
+        // TODO: add error notification here
     }
 
     void PluginHost::setValueForParameter (KeyType key, int parameterIndex, float value) {
-        if (auto parameter = getParameter (key, parameterIndex)) parameter->setValue (value);
+        if (auto parameter = getParameter (key, parameterIndex)) return parameter->setValue (value);
+        // TODO: add error notification here
     }
 
     juce::String PluginHost::getDisplayValueForParameter (KeyType key, int parameterIndex, float value) {
@@ -488,16 +483,18 @@ namespace timeoffaudio {
             for (auto [key, pluginBox] : pluginMap) {
                 if (pluginBox.get().instance.get() == pluginInstance) {
                     listeners.call (&Listener::pluginInstanceParameterChanged, key, parameterIndex, newValue);
-
                     break;
                 }
             }
         });
     }
 
+    void PluginHost::audioProcessorChanged (juce::AudioProcessor*, const juce::AudioProcessor::ChangeDetails& details) {
+        if (details.latencyChanged) listeners.call (&Listener::latenciesChanged);
+    }
+
     void PluginHost::audioProcessorParameterChangeGestureBegin (juce::AudioProcessor*, int) {}
     void PluginHost::audioProcessorParameterChangeGestureEnd (juce::AudioProcessor*, int) {}
-    void PluginHost::audioProcessorChanged (juce::AudioProcessor*, const juce::AudioProcessor::ChangeDetails&) {}
 
     void PluginHost::debugPrintState() const {
         DBG ("=============================== Plugin Host State ===============================");

@@ -33,9 +33,21 @@ The data model of the plugin host is built around the concept of plugins and the
 - **TransientPluginMap**: Used for temporary changes to the plugin instances. It is a mutable version of `PluginMap` that allows changes to be made before being committed back to the immutable `PluginMap`.
 - **Plugin**: Encapsulates an audio plugin instance along with its GUI window and connection information.
 
+
+### plugin discovery
+
+Plugin discovery is managed by the `PluginScan` class, which supports asynchronous scanning of plugins across multiple threads. This class is integral to identifying available plugins and updating the host system with new or removed plugins. It provides several key functions and callbacks to enhance interaction and responsiveness:
+
+- **startScan**: Initiates the scanning process for a specified plugin format. This function is useful for starting the scan based on user input or system initialization.
+- **abortOngoingScan**: Allows for the cancellation of any currently running scan, providing a way to stop the operation gracefully if needed.
+- **isScanInProgress**: Returns a boolean indicating whether a scan is currently active, which can be used to update UI elements or manage system states.
+- **getScanStatus**: Provides a snapshot of the current scan progress, including which plugins are being scanned and the overall progress percentage.
+
 ### access patterns
 
-- **withWriteAccess**: Functions that modify the `TransientPluginMap` must be wrapped in a `withWriteAccess` call. This ensures that changes are made within a controlled scope, and the modified map is safely committed back as an immutable `PluginMap` at the end of the block. This method is used for operations like creating, deleting, or moving plugin instances.
+There are a few key methods used to access and mutate the state of the plugin host. At the core of these access patterns is the concept of immutability. Due to this, it is always assumed that only one thread mutates plugin host state at a time, but N threads can read the state at the same time.
+
+- **withWriteAccess**: Functions that require a  `TransientPluginMap` must be wrapped in a `withWriteAccess` call. This ensures that changes are made within a controlled scope, and the modified map is safely committed back as an immutable `PluginMap` at the end of the block. This method is used for operations like creating, deleting, or moving plugin instances.
 
 
 ```cpp
@@ -46,7 +58,7 @@ void PluginHost::deletePluginInstance (KeyType key) {
 
 Most operations that mutate the plugin map have a version that takes a `TransientPluginMap` as an argument, which allows them to be chained arbitrarily and committed back to the immutable `PluginMap` at the end of the block in a transactional way.
 
-- **withReadOnlyAccess**: For operations that only need to read from the `PluginMap` without modifying it, `withReadOnlyAccess` is used. This method passes a constant reference of the `PluginMap` to the provided function, ensuring that no modifications can occur.
+- **withReadOnlyAccess**: For operations that only need to read from the `PluginMap` without modifying it, `withReadOnlyAccess` is used. This method passes a constant copy of the `PluginMap` to the provided function, acting as a read-only snapshot of the plugin host state, which is thread-safe thanks to immer's immutable data model.
 
 ```cpp
 void PluginHost::withReadOnlyAccess (std::function<void (const PluginMap)> accessor) const {
@@ -54,9 +66,17 @@ void PluginHost::withReadOnlyAccess (std::function<void (const PluginMap)> acces
 }
 ```
 
-These access patterns ensure thread safety and data integrity by controlling how and when changes to the plugin map are made and committed.
+- **process**: The `process` method is used to process audio through a specific plugin. It's important to note that this method must be wrapped in a `withReadOnlyAccess` call to ensure that the plugin is retrieved from a consistent snapshot view of the PluginHost. This approach guarantees thread-safety and prevents potential race conditions during audio processing.
 
-### events / callbacks
+```cpp
+PluginHost::withReadOnlyAccess ([&] (const PluginMap plugins) {
+    if (auto pluginBox = plugins.find(pluginKey)) {
+        PluginHost::process(pluginBox->get(), buffer, midiMessages);
+    }
+});
+```
+
+These access patterns ensure thread safety and data integrity by controlling how and when changes to the plugin map are made and committed, as well as providing a consistent view of the plugin state during audio processing.
 
 ### events / callbacks
 
@@ -78,24 +98,10 @@ The `PluginHost::Listener` interface provides a set of callbacks that allow for 
 
 - **pluginInstanceParameterChanged**: Fired when a parameter within a plugin instance changes. It reports the unique identifier of the plugin, the index of the parameter that changed, and the new value. This is essential for keeping UI elements like sliders or knobs in sync with the plugin's state.
 
+- **latenciesChanged**: Called when the latency of one or more plugins in the host changes. This can occur when plugins are added, removed, or their internal latency is modified. Applications can use this callback to update their latency compensation mechanisms or inform the user about changes in overall system latency.
+
 These callbacks form a comprehensive system for managing and responding to events within the plugin host, ensuring that applications can maintain accurate and up-to-date information about their plugins and react promptly to changes.
 
-### plugin discovery
-
-Plugin discovery is managed by the `PluginScan` class, which supports asynchronous scanning of plugins across multiple threads. This class is integral to identifying available plugins and updating the host system with new or removed plugins. It provides several key functions and callbacks to enhance interaction and responsiveness:
-
-- **startScan**: Initiates the scanning process for a specified plugin format. This function is useful for starting the scan based on user input or system initialization.
-- **abortOngoingScan**: Allows for the cancellation of any currently running scan, providing a way to stop the operation gracefully if needed.
-- **isScanInProgress**: Returns a boolean indicating whether a scan is currently active, which can be used to update UI elements or manage system states.
-- **getScanStatus**: Provides a snapshot of the current scan progress, including which plugins are being scanned and the overall progress percentage.
-
-#### callbacks
-
-- **scanProgressed**: This callback is triggered during the scanning process to provide real-time updates on the progress. It includes parameters such as the progress percentage, the name of the plugin format being scanned, and the current plugin being processed.
-- **scanFinished**: Called when a scan completes, this callback can be used to trigger post-scan processes such as refreshing the UI or updating internal data structures.
-- **availablePluginsUpdated**: Triggered when the list of available plugins is updated (either by adding new plugins or removing unavailable ones), this callback helps maintain a current view of all plugins that the system can utilize.
-
-These functions and callbacks ensure that the plugin discovery process is robust, responsive, and integrated with the host application's overall functionality, allowing for dynamic updates and management of plugin resources.
 
 ### coming soon
 

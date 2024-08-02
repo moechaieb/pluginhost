@@ -4,6 +4,7 @@
 #include "PluginScan.h"
 #include "PluginWindow.h"
 #include <choc/containers/choc_Value.h>
+#include <immer/algorithm.hpp>
 #include <immer/box.hpp>
 #include <immer/map.hpp>
 #include <immer/map_transient.hpp>
@@ -25,13 +26,15 @@ namespace timeoffaudio {
             virtual void availablePluginsUpdated (const juce::Array<juce::PluginDescription>& /*pluginDescriptions*/) {}
             virtual void pluginInstanceLoadSuccessful (PluginHost::KeyType /*uuid*/,
                 juce::AudioPluginInstance* /*plugin*/) {}
-            virtual void pluginInstanceLoadFailed (PluginHost::KeyType /*uuid*/, std::string /*error*/) {}
-            virtual void pluginInstanceUpdated (PluginHost::KeyType /*uuid*/, juce::AudioPluginInstance* /*plugin*/) {}
-            // TODO: actually call this callback as it;'s currently not in use
             virtual void pluginInstanceDeleted (PluginHost::KeyType /*uuid*/, juce::AudioPluginInstance* /*plugin*/) {}
             virtual void pluginInstanceParameterChanged (PluginHost::KeyType /*uuid*/,
                 int /*parameterIndex*/,
                 float /*newValue*/) {}
+            virtual void latenciesChanged () {}
+
+            // TODO: these two are not used anywhere at the moment
+            virtual void pluginInstanceUpdated (PluginHost::KeyType /*uuid*/, juce::AudioPluginInstance* /*plugin*/) {}
+            virtual void pluginInstanceLoadFailed (PluginHost::KeyType /*uuid*/, std::string /*error*/) {}
         };
 
         struct Plugin {
@@ -43,6 +46,9 @@ namespace timeoffaudio {
             ConnectionList connections;
 
             Plugin() = default;
+
+            // Comparison operators
+            auto operator<=> (const Plugin&) const = default;
 
             // Copy constructor
             Plugin (const Plugin& other)
@@ -61,17 +67,14 @@ namespace timeoffaudio {
             Plugin (std::shared_ptr<juce::AudioPluginInstance> inst,
                 std::shared_ptr<PluginWindow> win,
                 imagiro::Parameter* enabledParameter)
-                : instance (std::move (inst)),
-                  window (std::move (win)),
-                  enabledParameter (enabledParameter) {}
+                : instance (std::move (inst)), window (std::move (win)), enabledParameter (enabledParameter) {}
         };
 
         using PluginMap          = immer::map<KeyType, immer::box<Plugin>>;
         using TransientPluginMap = PluginMap::transient_type;
+        using ConnectionsRefreshFn = std::function<Plugin::ConnectionList (KeyType, const TransientPluginMap&)>;
 
-        using ConnectionsRefresh = std::function<Plugin::ConnectionList (KeyType, const TransientPluginMap&)>;
-
-        PluginHost (ConnectionsRefresh connectionFactory =
+        PluginHost (ConnectionsRefreshFn connectionFactory =
                         [] (KeyType, const TransientPluginMap&) -> Plugin::ConnectionList { return {}; });
         ~PluginHost() override;
 
@@ -168,9 +171,7 @@ namespace timeoffaudio {
         void loadPluginFromState (TransientPluginMap& pluginMap, const choc::value::Value pluginState);
         void loadAllPluginsFromState (choc::value::Value allPluginsState);
 
-        virtual imagiro::Parameter* getEnabledParameterForKey (KeyType key) {
-            return nullptr;
-        }
+        virtual imagiro::Parameter* getEnabledParameterForKey (KeyType key) { return nullptr; }
 
     private:
         int sampleRate;
@@ -178,15 +179,27 @@ namespace timeoffaudio {
         juce::AudioPlayHead* playhead;
 
         PluginMap plugins;
-        ConnectionsRefresh getConnectionsFor;
+        ConnectionsRefreshFn getConnectionsFor;
 
         juce::AudioPluginFormatManager formatManager;
         juce::ListenerList<Listener> listeners;
         void changeListenerCallback (juce::ChangeBroadcaster* source) override;
 
-        // PluginWindowMap pluginWindows;
-
         juce::AudioProcessorParameter* getParameter (KeyType key, int parameterIndex) const;
+
+        void diffAndNotifyListeners (const PluginMap& previousPlugins, const PluginMap& newPlugins) {
+            immer::diff (previousPlugins,
+                newPlugins,
+                immer::make_differ (
+                    [&] (const PluginMap::value_type& added) {
+                        listeners.call (
+                            &Listener::pluginInstanceLoadSuccessful, added.first, added.second->instance.get());
+                    },
+                    [&] (const PluginMap::value_type& removed) {
+                        listeners.call (
+                            &Listener::pluginInstanceDeleted, removed.first, removed.second->instance.get());
+                    }));
+        }
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PluginHost)
     };
