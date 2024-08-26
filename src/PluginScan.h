@@ -10,7 +10,7 @@ namespace timeoffaudio {
         using ScanProgressCallback =
             std::function<void (float progress01, juce::String formatName, juce::String currentPlugin)>;
         using ScanFinishedCallback = std::function<void()>;
-        using ScanFilter = std::function<bool(const juce::PluginDescription&)>;
+        using ScanFilter           = std::function<bool (const juce::PluginDescription&)>;
 
         PluginScan (juce::KnownPluginList& l,
             juce::AudioPluginFormat& format,
@@ -80,19 +80,18 @@ namespace timeoffaudio {
                 allBlacklistedFiles.end(),
                 initiallyBlacklistedFiles.begin(),
                 initiallyBlacklistedFiles.end(),
-                std::back_inserter (newBlacklistedFiles)
-            );
+                std::back_inserter (newBlacklistedFiles));
 
             // Setting the first argument to true will interrupt the scan jobs that are currently running
             // This is important because it allows the scan to be aborted mid-way through
-            pool->removeAllJobs(true, 1000);
+            pool->removeAllJobs (true, 1000);
             jassert (pool->getNumJobs() == 0);
 
             // We don't have a way of progressively or preemtively filter out PluginDescription objects
             // So we do it in bulk here at the end
-            for(auto pluginDescription : list.getTypesForFormat(formatToScan)) {
-                if(scanFilter(pluginDescription)) {
-                    list.removeType(pluginDescription);
+            for (auto pluginDescription : list.getTypesForFormat (formatToScan)) {
+                if (scanFilter (pluginDescription)) {
+                    list.removeType (pluginDescription);
                 }
             }
 
@@ -122,7 +121,8 @@ namespace timeoffaudio {
             ScanJob (PluginScan& s) : ThreadPoolJob ("pluginScanJob"), scan (s) {}
 
             JobStatus runJob() {
-                while (!shouldExit() && scan.scanNextPlugin()) {}
+                while (!shouldExit() && scan.scanNextPlugin()) {
+                }
                 return ThreadPoolJob::JobStatus::jobHasFinished;
             }
 
