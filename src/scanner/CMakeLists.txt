@@ -1,4 +1,8 @@
+cmake_minimum_required(VERSION 3.15)
 project(PluginScanner VERSION "0.0.1")
+
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../../juce ${CMAKE_BINARY_DIR}/juce)
+
 juce_add_console_app(PluginScanner
     PLUGINHOST_AU TRUE
 )
