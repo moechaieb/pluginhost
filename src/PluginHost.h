@@ -74,7 +74,7 @@ namespace timeoffaudio {
         using TransientPluginMap = PluginMap::transient_type;
         using ConnectionsRefreshFn = std::function<Plugin::ConnectionList (KeyType, const TransientPluginMap&)>;
 
-        PluginHost (ConnectionsRefreshFn connectionFactory =
+        PluginHost (juce::PropertiesFile& configFile, ConnectionsRefreshFn connectionFactory =
                         [] (KeyType, const TransientPluginMap&) -> Plugin::ConnectionList { return {}; });
         ~PluginHost() override;
 
@@ -174,6 +174,8 @@ namespace timeoffaudio {
         virtual imagiro::Parameter* getEnabledParameterForKey (KeyType key) { return nullptr; }
 
     private:
+        juce::PropertiesFile& configFile;
+
         int sampleRate;
         int blockSize;
         juce::AudioPlayHead* playhead;

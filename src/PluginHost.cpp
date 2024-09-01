@@ -9,10 +9,10 @@
 #include <memory>
 
 namespace timeoffaudio {
-    PluginHost::PluginHost (ConnectionsRefreshFn cF) : getConnectionsFor (cF) {
+    PluginHost::PluginHost (juce::PropertiesFile& configFile, ConnectionsRefreshFn cF) : configFile (configFile), getConnectionsFor (cF) {
         knownPlugins.setCustomScanner (std::make_unique<timeoffaudio::CustomPluginScanner>());
         // TODO: extract this to a config file that gets passed in
-        if (auto savedPluginList = Resources::getInstance()->getConfigFile()->getXmlValue ("pluginList"))
+        if (auto savedPluginList = configFile.getXmlValue ("pluginList"))
             knownPlugins.recreateFromXml (*savedPluginList);
         else
             changeListenerCallback (&knownPlugins);
@@ -248,9 +248,8 @@ namespace timeoffaudio {
     void PluginHost::changeListenerCallback (juce::ChangeBroadcaster* source) {
         if (source == &knownPlugins) {
             if (auto savedPluginList = knownPlugins.createXml()) {
-                auto& configFile = Resources::getInstance()->getConfigFile();
-                configFile->setValue ("pluginList", savedPluginList.get());
-                configFile->saveIfNeeded();
+                configFile.setValue ("pluginList", savedPluginList.get());
+                configFile.saveIfNeeded();
             }
 
             listeners.call (&Listener::availablePluginsUpdated, knownPlugins.getTypes());
