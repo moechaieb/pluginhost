@@ -11,15 +11,26 @@ namespace timeoffaudio {
         class SubprocessCoordinator final : private juce::ChildProcessCoordinator {
         public:
             SubprocessCoordinator() {
-                auto pluginScannerLocation = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+                // Firstly, look for the plugin scanner in the common application data directory
+                auto pluginScannerLocation = juce::File::getSpecialLocation (juce::File::commonApplicationDataDirectory)
 #if JUCE_MAC
                                                  .getChildFile ("Application Support")
 #endif
                                                  .getChildFile (JucePlugin_Manufacturer)
-                                                 .getChildFile ("PluginScanner")
-                                                 .getFullPathName();
+                                                 .getChildFile ("PluginScanner");
 
-                launchWorkerProcess (pluginScannerLocation, processUID, 0, 0);
+                // If it doesn't exist, look in the user application data directory
+                if (!pluginScannerLocation.existsAsFile()) {
+                    pluginScannerLocation = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+#if JUCE_MAC
+                                                 .getChildFile ("Application Support")
+#endif
+                                                 .getChildFile (JucePlugin_Manufacturer)
+                                                 .getChildFile ("PluginScanner");
+                }
+
+
+                launchWorkerProcess (pluginScannerLocation.getFullPathName(), processUID, 0, 0);
             }
 
             enum class State { timeout, gotResult, connectionLost };
