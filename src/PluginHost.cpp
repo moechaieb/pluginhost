@@ -202,7 +202,7 @@ namespace timeoffaudio {
 
         // TODO: this needs to be lifted outside of PluginHost so that it's customizable per
         // plugin and not fixed like it is now
-        auto scanFilter = [] (const juce::PluginDescription& plugin) { return plugin.isInstrument; };
+        auto scanFilter = [] (const juce::PluginDescription& plugin) { return plugin.isInstrument || plugin.name == JucePlugin_Name; };
 
         for (auto formatCandidate : formatManager.getFormats())
             if (formatCandidate->getName() == format && formatCandidate->canScanForPlugins()) {
