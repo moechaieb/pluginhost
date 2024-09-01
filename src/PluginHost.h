@@ -200,6 +200,15 @@ namespace timeoffaudio {
                     [&] (const PluginMap::value_type& removed) {
                         listeners.call (
                             &Listener::pluginInstanceDeleted, removed.first, removed.second->instance.get());
+                    },
+                    [&] (const PluginMap::value_type& changedFrom, const PluginMap::value_type& changedTo) {
+                        // Notify listeners that the old plugin at the updated key is deleted
+                        listeners.call (
+                            &Listener::pluginInstanceDeleted, changedFrom.first, changedFrom.second->instance.get());
+
+                        // Notify listeners that the new plugin at the updated key is loaded
+                        listeners.call (
+                            &Listener::pluginInstanceLoadSuccessful, changedTo.first, changedTo.second->instance.get());
                     }));
         }
 
