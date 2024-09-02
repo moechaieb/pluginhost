@@ -14,6 +14,7 @@ namespace timeoffaudio {
 
         PluginScan (juce::KnownPluginList& l,
             juce::AudioPluginFormat& format,
+            juce::File& failedToLoadPluginsFolder,
             ScanProgressCallback oSP,
             ScanFinishedCallback oSF,
             ScanFilter sF,
@@ -23,12 +24,18 @@ namespace timeoffaudio {
               numThreads (threads),
               list (l),
               formatToScan (format),
+              failedToLoadPluginsFolder (failedToLoadPluginsFolder),
               onScanProgress (oSP),
               onScanFinished (oSF),
               scanFilter (sF) {
             const auto blacklisted    = list.getBlacklistedFiles();
             initiallyBlacklistedFiles = std::set<juce::String> (blacklisted.begin(), blacklisted.end());
-
+            directoryScanner.reset (new juce::PluginDirectoryScanner (list,
+                formatToScan,
+                formatToScan.getDefaultLocationsToSearch(),
+                true,
+                failedToLoadPluginsFolder.getChildFile ("failedToLoadPlugins"),
+                allowAsync));
             // You need to use at least one thread when scanning plug-ins asynchronously
             jassert (!allowAsync || (numThreads > 0));
 
@@ -50,21 +57,16 @@ namespace timeoffaudio {
         ScanProgressCallback onScanProgress;
         ScanFinishedCallback onScanFinished;
         ScanFilter scanFilter;
-        std::unique_ptr<juce::PluginDirectoryScanner> directoryScanner =
-            std::make_unique<juce::PluginDirectoryScanner> (list,
-                formatToScan,
-                formatToScan.getDefaultLocationsToSearch(),
-                true,
-                Resources::getInstance()->getDataFolder().getChildFile ("failedToLoadPlugins"),
-                allowAsync);
+        std::unique_ptr<juce::PluginDirectoryScanner> directoryScanner;
         juce::String pluginBeingScanned;
         std::unique_ptr<juce::ThreadPool> pool =
             std::make_unique<juce::ThreadPool> (juce::ThreadPoolOptions {}.withNumberOfThreads (numThreads));
         std::set<juce::String> initiallyBlacklistedFiles;
+        juce::File& failedToLoadPluginsFolder;
 
         void start() {
             directoryScanner->applyBlacklistingsFromDeadMansPedal (
-                list, Resources::getInstance()->getDataFolder().getChildFile ("failedToLoadPlugins"));
+                list, failedToLoadPluginsFolder.getChildFile ("failedToLoadPlugins"));
 
             for (int i = numThreads; --i >= 0;) pool->addJob (new ScanJob (*this), true);
 

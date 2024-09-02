@@ -11,7 +11,6 @@
 namespace timeoffaudio {
     PluginHost::PluginHost (juce::PropertiesFile& configFile, ConnectionsRefreshFn cF) : configFile (configFile), getConnectionsFor (cF) {
         knownPlugins.setCustomScanner (std::make_unique<timeoffaudio::CustomPluginScanner>());
-        // TODO: extract this to a config file that gets passed in
         if (auto savedPluginList = configFile.getXmlValue ("pluginList"))
             knownPlugins.recreateFromXml (*savedPluginList);
         else
@@ -206,8 +205,10 @@ namespace timeoffaudio {
 
         for (auto formatCandidate : formatManager.getFormats())
             if (formatCandidate->getName() == format && formatCandidate->canScanForPlugins()) {
+                auto failedToLoadPluginsFolder = configFile.getFile().getParentDirectory();
+
                 currentScan.reset (new timeoffaudio::PluginScan (
-                    knownPlugins, *formatCandidate, onScanProgress, onScanFinished, scanFilter));
+                    knownPlugins, *formatCandidate, failedToLoadPluginsFolder, onScanProgress, onScanFinished, scanFilter));
                 break;
             }
     }
