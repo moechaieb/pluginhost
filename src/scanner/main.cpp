@@ -7,7 +7,7 @@ namespace timeoffaudio {
         class Application : public juce::JUCEApplicationBase {
         public:
             const juce::String getApplicationName() override { return "time off audio plugin scanner"; }
-            const juce::String getApplicationVersion() override { return "0.0.1"; }
+            const juce::String getApplicationVersion() override { return "0.0.3"; }
 
             bool moreThanOneInstanceAllowed() override { return true; }
 
@@ -25,9 +25,8 @@ namespace timeoffaudio {
             }
 
             void initialise (const juce::String& commandLineParameters) override {
-                auto scannerWorker = std::make_unique<timeoffaudio::scanner::Worker>();
+                auto scannerWorker = std::make_unique<timeoffaudio::scanner::Worker> ();
                 if (!scannerWorker->initialiseFromCommandLine (commandLineParameters, PROCESS_UID)) {
-                    DBG ("Failed to initialise scanner worker and connect to coordinator");
                     return;
                 }
 
@@ -35,9 +34,8 @@ namespace timeoffaudio {
                 worker = std::move (scannerWorker);
             }
 
-            static void crashHandler (void*) {
+            static void crashHandler (void*) {}
 
-            }
         private:
             std::unique_ptr<timeoffaudio::scanner::Worker> worker;
         };

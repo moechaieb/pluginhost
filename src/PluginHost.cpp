@@ -235,6 +235,7 @@ namespace timeoffaudio {
     void PluginHost::clearAllAvailablePlugins() {
         timeoffaudio_assert (isScanInProgress() == false);
         knownPlugins.clear();
+        knownPlugins.clearBlacklistedFiles();
     }
 
     void PluginHost::clearAvailablePlugin (const juce::PluginDescription& pluginToClear) {

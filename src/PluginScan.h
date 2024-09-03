@@ -28,14 +28,14 @@ namespace timeoffaudio {
               onScanProgress (oSP),
               onScanFinished (oSF),
               scanFilter (sF) {
-            const auto blacklisted    = list.getBlacklistedFiles();
-            initiallyBlacklistedFiles = std::set<juce::String> (blacklisted.begin(), blacklisted.end());
+            const auto blacklisted = list.getBlacklistedFiles();
             directoryScanner.reset (new juce::PluginDirectoryScanner (list,
                 formatToScan,
                 formatToScan.getDefaultLocationsToSearch(),
                 true,
                 failedToLoadPluginsFolder.getChildFile ("failedToLoadPlugins"),
                 allowAsync));
+            pool.reset(new juce::ThreadPool(juce::ThreadPoolOptions().withNumberOfThreads(numThreads)));
             // You need to use at least one thread when scanning plug-ins asynchronously
             jassert (!allowAsync || (numThreads > 0));
 
@@ -59,31 +59,16 @@ namespace timeoffaudio {
         ScanFilter scanFilter;
         std::unique_ptr<juce::PluginDirectoryScanner> directoryScanner;
         juce::String pluginBeingScanned;
-        std::unique_ptr<juce::ThreadPool> pool =
-            std::make_unique<juce::ThreadPool> (juce::ThreadPoolOptions {}.withNumberOfThreads (numThreads));
-        std::set<juce::String> initiallyBlacklistedFiles;
+        std::unique_ptr<juce::ThreadPool> pool;
         juce::File& failedToLoadPluginsFolder;
 
         void start() {
-            directoryScanner->applyBlacklistingsFromDeadMansPedal (
-                list, failedToLoadPluginsFolder.getChildFile ("failedToLoadPlugins"));
-
             for (int i = numThreads; --i >= 0;) pool->addJob (new ScanJob (*this), true);
 
             startTimerHz (20);
         }
 
         void finish() {
-            const auto blacklisted = list.getBlacklistedFiles();
-            std::set<juce::String> allBlacklistedFiles (blacklisted.begin(), blacklisted.end());
-
-            std::vector<juce::String> newBlacklistedFiles;
-            std::set_difference (allBlacklistedFiles.begin(),
-                allBlacklistedFiles.end(),
-                initiallyBlacklistedFiles.begin(),
-                initiallyBlacklistedFiles.end(),
-                std::back_inserter (newBlacklistedFiles));
-
             // Setting the first argument to true will interrupt the scan jobs that are currently running
             // This is important because it allows the scan to be aborted mid-way through
             pool->removeAllJobs (true, 1000);
@@ -94,8 +79,12 @@ namespace timeoffaudio {
             for (auto pluginDescription : list.getTypesForFormat (formatToScan)) {
                 if (scanFilter (pluginDescription)) {
                     list.removeType (pluginDescription);
+                    list.addToBlacklist(pluginDescription.fileOrIdentifier);
                 }
             }
+
+            for (auto failed : directoryScanner->getFailedFiles())
+                list.addToBlacklist(failed);
 
             onScanFinished(); // This should be called last as it will cause the PluginScan to go out of scope and be destroyed
         }
@@ -123,8 +112,7 @@ namespace timeoffaudio {
             ScanJob (PluginScan& s) : ThreadPoolJob ("pluginScanJob"), scan (s) {}
 
             JobStatus runJob() {
-                while (!shouldExit() && scan.scanNextPlugin()) {
-                }
+                while (!shouldExit() && scan.scanNextPlugin()) {}
                 return ThreadPoolJob::JobStatus::jobHasFinished;
             }
 

@@ -4,7 +4,7 @@
 
 namespace timeoffaudio {
 
-    constexpr const char* processUID = "pluginScanner";
+    constexpr const char* PROCESS_UID = "pluginScanner";
 
     class CustomPluginScanner final : public juce::KnownPluginList::CustomScanner {
     public:
@@ -23,14 +23,15 @@ namespace timeoffaudio {
                 if (!pluginScannerLocation.existsAsFile()) {
                     pluginScannerLocation = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
 #if JUCE_MAC
-                                                 .getChildFile ("Application Support")
+                                                .getChildFile ("Application Support")
 #endif
-                                                 .getChildFile (JucePlugin_Manufacturer)
-                                                 .getChildFile ("PluginScanner");
+                                                .getChildFile (JucePlugin_Manufacturer)
+                                                .getChildFile ("PluginScanner");
                 }
 
-
-                launchWorkerProcess (pluginScannerLocation.getFullPathName(), processUID, 0, 0);
+                if (!launchWorkerProcess (pluginScannerLocation.getFullPathName(), PROCESS_UID, 0, 0)) {
+                    // TODO: what should I do here if this ever happens? Ideally fallback to in-process scanning.
+                }
             }
 
             enum class State { timeout, gotResult, connectionLost };
@@ -43,7 +44,7 @@ namespace timeoffaudio {
                 std::unique_lock<std::mutex> lock { mutex };
 
                 if (!condvar.wait_for (
-                        lock, std::chrono::milliseconds { 50 }, [&] { return gotResult || connectionLost; }))
+                        lock, std::chrono::milliseconds { 200 }, [&] { return gotResult || connectionLost; }))
                     return { State::timeout, nullptr };
 
                 const auto state = connectionLost ? State::connectionLost : State::gotResult;
@@ -125,7 +126,11 @@ namespace timeoffaudio {
                     for (const auto* item : response.xml->getChildIterator()) {
                         auto desc = std::make_unique<juce::PluginDescription>();
 
-                        if (desc->loadFromXml (*item)) result.add (std::move (desc));
+                        if (desc->loadFromXml (*item)) {
+                            result.add (std::move (desc));
+                        } else {
+                            DBG ("[CustomPluginScanner] failed to load plugin description from XML");
+                        }
                     }
                 }
 
