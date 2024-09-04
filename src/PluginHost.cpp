@@ -9,8 +9,19 @@
 #include <memory>
 
 namespace timeoffaudio {
-    PluginHost::PluginHost (juce::PropertiesFile& configFile, ConnectionsRefreshFn cF) : configFile (configFile), getConnectionsFor (cF) {
-        knownPlugins.setCustomScanner (std::make_unique<timeoffaudio::CustomPluginScanner>());
+    PluginHost::PluginHost (juce::PropertiesFile& configFile, ConnectionsRefreshFn cF)
+        : configFile (configFile), getConnectionsFor (cF) {
+        // TODO: this needs to be lifted outside of PluginHost so that it's customizable per
+        // plugin and not fixed like it is now
+        knownPlugins.setCustomScanner (
+            std::make_unique<timeoffaudio::CustomPluginScanner> ([] (const juce::PluginDescription& plugin) {
+                if (plugin.isInstrument) return false;
+                if (plugin.name == JucePlugin_Name) return false;
+                // Add other exclusions here
+
+                return true;
+            }));
+
         if (auto savedPluginList = configFile.getXmlValue ("pluginList"))
             knownPlugins.recreateFromXml (*savedPluginList);
         else
@@ -43,9 +54,7 @@ namespace timeoffaudio {
     void PluginHost::deletePluginInstance (KeyType key) {
         withWriteAccess ([&] (TransientPluginMap& pluginMap) { deletePluginInstance (pluginMap, key); });
     }
-    void PluginHost::deletePluginInstance (TransientPluginMap& pluginMap, KeyType key) {
-        pluginMap.erase (key);
-    }
+    void PluginHost::deletePluginInstance (TransientPluginMap& pluginMap, KeyType key) { pluginMap.erase (key); }
 
     void PluginHost::movePluginInstance (KeyType fromKey, KeyType toKey) {
         withWriteAccess ([&] (TransientPluginMap& pluginMap) { movePluginInstance (pluginMap, fromKey, toKey); });
@@ -146,8 +155,8 @@ namespace timeoffaudio {
     template <>
     void PluginHost::withWriteAccess<PluginHost::PostUpdateAction::RefreshConnections> (
         std::function<void (TransientPluginMap&)> mutator) {
-        const auto previousPlugins  = plugins;
-        auto transientPlugins = previousPlugins.transient();
+        const auto previousPlugins = plugins;
+        auto transientPlugins      = previousPlugins.transient();
         mutator (transientPlugins);
 
         // Re-compute the connections after the plugin map is altered each time
@@ -176,8 +185,8 @@ namespace timeoffaudio {
     template <>
     void PluginHost::withWriteAccess<PluginHost::PostUpdateAction::None> (
         std::function<void (TransientPluginMap&)> mutator) {
-        const auto previousPlugins  = plugins;
-        auto transientPlugins = previousPlugins.transient();
+        const auto previousPlugins = plugins;
+        auto transientPlugins      = previousPlugins.transient();
         mutator (transientPlugins);
         plugins = transientPlugins.persistent();
         diffAndNotifyListeners (previousPlugins, plugins);
@@ -199,16 +208,12 @@ namespace timeoffaudio {
             listeners.call (&Listener::scanFinished);
         };
 
-        // TODO: this needs to be lifted outside of PluginHost so that it's customizable per
-        // plugin and not fixed like it is now
-        auto scanFilter = [] (const juce::PluginDescription& plugin) { return plugin.isInstrument || plugin.name == JucePlugin_Name; };
-
         for (auto formatCandidate : formatManager.getFormats())
             if (formatCandidate->getName() == format && formatCandidate->canScanForPlugins()) {
                 auto failedToLoadPluginsFolder = configFile.getFile().getParentDirectory();
 
                 currentScan.reset (new timeoffaudio::PluginScan (
-                    knownPlugins, *formatCandidate, failedToLoadPluginsFolder, onScanProgress, onScanFinished, scanFilter));
+                    knownPlugins, *formatCandidate, failedToLoadPluginsFolder, onScanProgress, onScanFinished));
                 break;
             }
     }

@@ -81,7 +81,9 @@ namespace timeoffaudio {
             JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SubprocessCoordinator)
         };
 
-        CustomPluginScanner() {}
+        using ScanFilter = std::function<bool (const juce::PluginDescription&)>;
+
+        CustomPluginScanner(ScanFilter filter) : filter(filter) {}
         ~CustomPluginScanner() override {}
 
         bool findPluginTypesFor (juce::AudioPluginFormat& format,
@@ -127,9 +129,9 @@ namespace timeoffaudio {
                         auto desc = std::make_unique<juce::PluginDescription>();
 
                         if (desc->loadFromXml (*item)) {
-                            result.add (std::move (desc));
-                        } else {
-                            DBG ("[CustomPluginScanner] failed to load plugin description from XML");
+                            // Only add the plugin description if the filter returns true
+                            if (filter(*desc))
+                                result.add (std::move (desc));
                         }
                     }
                 }
@@ -139,6 +141,7 @@ namespace timeoffaudio {
         }
 
         std::unique_ptr<SubprocessCoordinator> scanCoordinator;
+        ScanFilter filter;
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (CustomPluginScanner)
     };

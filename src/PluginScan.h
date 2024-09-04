@@ -10,14 +10,12 @@ namespace timeoffaudio {
         using ScanProgressCallback =
             std::function<void (float progress01, juce::String formatName, juce::String currentPlugin)>;
         using ScanFinishedCallback = std::function<void()>;
-        using ScanFilter           = std::function<bool (const juce::PluginDescription&)>;
 
         PluginScan (juce::KnownPluginList& l,
             juce::AudioPluginFormat& format,
             juce::File& failedToLoadPluginsFolder,
             ScanProgressCallback oSP,
             ScanFinishedCallback oSF,
-            ScanFilter sF,
             bool allowPluginsWhichRequireAsynchronousInstantiation = false,
             int threads                                            = NUM_THREADS)
             : allowAsync (allowPluginsWhichRequireAsynchronousInstantiation),
@@ -26,8 +24,7 @@ namespace timeoffaudio {
               formatToScan (format),
               failedToLoadPluginsFolder (failedToLoadPluginsFolder),
               onScanProgress (oSP),
-              onScanFinished (oSF),
-              scanFilter (sF) {
+              onScanFinished (oSF) {
             const auto blacklisted = list.getBlacklistedFiles();
             directoryScanner.reset (new juce::PluginDirectoryScanner (list,
                 formatToScan,
@@ -56,7 +53,6 @@ namespace timeoffaudio {
         juce::AudioPluginFormat& formatToScan;
         ScanProgressCallback onScanProgress;
         ScanFinishedCallback onScanFinished;
-        ScanFilter scanFilter;
         std::unique_ptr<juce::PluginDirectoryScanner> directoryScanner;
         juce::String pluginBeingScanned;
         std::unique_ptr<juce::ThreadPool> pool;
@@ -73,15 +69,6 @@ namespace timeoffaudio {
             // This is important because it allows the scan to be aborted mid-way through
             pool->removeAllJobs (true, 1000);
             jassert (pool->getNumJobs() == 0);
-
-            // We don't have a way of progressively or preemtively filter out PluginDescription objects
-            // So we do it in bulk here at the end
-            for (auto pluginDescription : list.getTypesForFormat (formatToScan)) {
-                if (scanFilter (pluginDescription)) {
-                    list.removeType (pluginDescription);
-                    list.addToBlacklist(pluginDescription.fileOrIdentifier);
-                }
-            }
 
             for (auto failed : directoryScanner->getFailedFiles())
                 list.addToBlacklist(failed);
