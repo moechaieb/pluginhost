@@ -9,6 +9,7 @@ if(APPLE)
 endif()
 
 juce_add_gui_app(PluginScanner
+PRODUCT_NAME "time off audio plugin scanner"
     BUNDLE_ID "com.timeoffaudio.pluginscanner"
     PLUGINHOST_AU TRUE
     COMPANY_NAME "time off audio"

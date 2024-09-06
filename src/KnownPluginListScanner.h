@@ -5,6 +5,7 @@
 namespace timeoffaudio {
 
     constexpr const char* PROCESS_UID = "pluginScanner";
+    constexpr const char* PROCESS_NAME = "time off audio plugin scanner";
 
     class CustomPluginScanner final : public juce::KnownPluginList::CustomScanner {
     public:
@@ -17,7 +18,7 @@ namespace timeoffaudio {
                                                  .getChildFile ("Application Support")
 #endif
                                                  .getChildFile (JucePlugin_Manufacturer)
-                                                 .getChildFile ("PluginScanner");
+                                                 .getChildFile (PROCESS_NAME);
 
                 // If it doesn't exist, look in the user application data directory
                 if (!pluginScannerLocation.existsAsFile()) {
@@ -26,7 +27,7 @@ namespace timeoffaudio {
                                                 .getChildFile ("Application Support")
 #endif
                                                 .getChildFile (JucePlugin_Manufacturer)
-                                                .getChildFile ("PluginScanner");
+                                                .getChildFile (PROCESS_NAME);
                 }
 
                 if (!launchWorkerProcess (pluginScannerLocation.getFullPathName(), PROCESS_UID, 0, 0)) {
