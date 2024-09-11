@@ -30,7 +30,7 @@ namespace timeoffaudio {
             virtual void pluginInstanceParameterChanged (PluginHost::KeyType /*uuid*/,
                 int /*parameterIndex*/,
                 float /*newValue*/) {}
-            virtual void latenciesChanged () {}
+            virtual void latenciesChanged() {}
 
             // TODO: these two are not used anywhere at the moment
             virtual void pluginInstanceUpdated (PluginHost::KeyType /*uuid*/, juce::AudioPluginInstance* /*plugin*/) {}
@@ -70,12 +70,15 @@ namespace timeoffaudio {
                 : instance (std::move (inst)), window (std::move (win)), enabledParameter (enabledParameter) {}
         };
 
-        using PluginMap          = immer::map<KeyType, immer::box<Plugin>>;
-        using TransientPluginMap = PluginMap::transient_type;
+        using PluginMap            = immer::map<KeyType, immer::box<Plugin>>;
+        using TransientPluginMap   = PluginMap::transient_type;
         using ConnectionsRefreshFn = std::function<Plugin::ConnectionList (KeyType, const TransientPluginMap&)>;
 
-        PluginHost (juce::PropertiesFile& configFile, ConnectionsRefreshFn connectionFactory =
-                        [] (KeyType, const TransientPluginMap&) -> Plugin::ConnectionList { return {}; });
+        PluginHost (
+            juce::PropertiesFile& configFile,
+            ConnectionsRefreshFn connectionFactory = [] (KeyType, const TransientPluginMap&) -> Plugin::ConnectionList {
+                return {};
+            });
         ~PluginHost() override;
 
         void process (const Plugin& plugin, juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages);
@@ -87,7 +90,8 @@ namespace timeoffaudio {
         void createPluginInstance (TransientPluginMap&,
             const juce::PluginDescription pluginDescription,
             KeyType key,
-            const juce::MemoryBlock& initialState = juce::MemoryBlock());
+            timeoffaudio::PluginWindow::Options options = {},
+            const juce::MemoryBlock& initialState       = juce::MemoryBlock());
         void deletePluginInstance (KeyType key);
         void deletePluginInstance (TransientPluginMap&, KeyType key);
         void movePluginInstance (KeyType fromKey, KeyType toKey);
@@ -129,8 +133,8 @@ namespace timeoffaudio {
         choc::value::Value getScanStatus() const;
 
         // Plugin Windows
-        void openPluginWindow (KeyType key, int xPos = 0, int yPos = 0);
-        void openPluginWindow (TransientPluginMap&, KeyType key, int xPos = 0, int yPos = 0);
+        void openPluginWindow (KeyType key, timeoffaudio::PluginWindow::Options options = {});
+        void openPluginWindow (TransientPluginMap&, KeyType key, timeoffaudio::PluginWindow::Options options = {});
 
         void closePluginWindow (TransientPluginMap&, KeyType key);
         void closePluginWindow (KeyType key);

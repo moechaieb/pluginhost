@@ -9,10 +9,17 @@ namespace timeoffaudio {
     public:
         enum class Type { normal = 0, generic, debug, araHost, numTypes };
 
-        PluginWindow (juce::AudioPluginInstance& pI, int xPos = 100, int yPos = 100, Type t = Type::normal)
-            : DocumentWindow ("plugin window",
-                juce::Colours::black,
-                DocumentWindow::minimiseButton | DocumentWindow::closeButton),
+        struct Options {
+            int xPos = 0;
+            int yPos = 0;
+            bool openAutomatically = true;
+            std::string titlePrefix = JucePlugin_Name;
+        };
+
+        PluginWindow (juce::AudioPluginInstance& pI, int xPos = 100, int yPos = 100, Type t = Type::normal, std::string windowTitlePrefix = JucePlugin_Name)
+            : DocumentWindow (juce::String(windowTitlePrefix) + ": " + pI.getPluginDescription().name.toLowerCase(),
+                  juce::Colours::black,
+                  DocumentWindow::closeButton),
               pluginInstance (pI),
               type (t) {
             setSize (400, 300);
@@ -24,21 +31,26 @@ namespace timeoffaudio {
             setConstrainer (&constrainer);
 
             setTopLeftPosition (xPos, yPos);
-            setAlwaysOnTop(true);
+            setAlwaysOnTop (true);
             setVisible (true);
         }
 
         ~PluginWindow() override { clearContentComponent(); }
 
-        void closeButtonPressed() override {
-            setVisible (false);
-        }
+        void closeButtonPressed() override { setVisible (false); }
 
         static std::string getLastXProp (Type type) { return "uiLastX_" + getTypeName (type); }
         static std::string getLastYProp (Type type) { return "uiLastY_" + getTypeName (type); }
         static std::string getOpenProp (Type type) { return "uiopen_" + getTypeName (type); }
 
         juce::BorderSize<int> getBorderThickness() override { return DocumentWindow::getBorderThickness(); }
+
+        void setWindowTitlePrefix (std::string newPrefix) {
+            if(newPrefix.empty())
+                setTitle (juce::String(JucePlugin_Name) + ": " + pluginInstance.getPluginDescription().name.toLowerCase());
+            else
+                setTitle (juce::String(newPrefix) + ": " + pluginInstance.getPluginDescription().name.toLowerCase());
+        }
 
     private:
         juce::AudioPluginInstance& pluginInstance;

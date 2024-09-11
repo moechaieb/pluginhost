@@ -111,6 +111,7 @@ namespace timeoffaudio {
     void PluginHost::createPluginInstance (TransientPluginMap& pluginMap,
         const juce::PluginDescription pluginDescription,
         const KeyType key,
+        timeoffaudio::PluginWindow::Options windowOptions,
         const juce::MemoryBlock& initialState) {
         for (auto format : formatManager.getFormats()) {
             if (format->getName() == pluginDescription.pluginFormatName) {
@@ -144,6 +145,7 @@ namespace timeoffaudio {
 
                 pluginMap.set (
                     key, immer::box<Plugin> (std::move (instance), nullptr, getEnabledParameterForKey (key)));
+                if (windowOptions.openAutomatically) openPluginWindow (pluginMap, key, windowOptions);
 
                 juce::Analytics::getInstance()->logEvent ("plugin_load", logParameters);
 
@@ -296,23 +298,30 @@ namespace timeoffaudio {
         });
     }
 
-    void PluginHost::openPluginWindow (TransientPluginMap& pluginMap, std::string key, int xPos, int yPos) {
+    void PluginHost::openPluginWindow (TransientPluginMap& pluginMap, std::string key, PluginWindow::Options options) {
         pluginMap.update_if_exists (key, [&] (auto pluginBox) {
             return pluginBox.update ([&] (auto plugin) {
                 if (auto pluginWindow = plugin.window) {
-                    pluginWindow->setTopLeftPosition (xPos, yPos);
+                    pluginWindow->setWindowTitlePrefix (options.titlePrefix);
+                    pluginWindow->setTopLeftPosition (options.xPos, options.yPos);
                     pluginWindow->toFront (false);
                     pluginWindow->setVisible (true);
-                } else
-                    plugin.window = std::make_shared<timeoffaudio::PluginWindow> (*plugin.instance, xPos, yPos);
+                } else {
+                    plugin.window = std::make_shared<timeoffaudio::PluginWindow> (*plugin.instance,
+                        options.xPos,
+                        options.yPos,
+                        timeoffaudio::PluginWindow::Type::normal,
+                        options.titlePrefix);
+                }
+
                 return plugin;
             });
         });
     }
 
-    void PluginHost::openPluginWindow (std::string key, int xPos, int yPos) {
+    void PluginHost::openPluginWindow (std::string key, PluginWindow::Options options) {
         withWriteAccess<PluginHost::PostUpdateAction::None> (
-            [&] (PluginHost::TransientPluginMap& pluginMap) { openPluginWindow (pluginMap, key, xPos, yPos); });
+            [&] (PluginHost::TransientPluginMap& pluginMap) { openPluginWindow (pluginMap, key, options); });
     }
 
     void PluginHost::updatePluginWindowBorderColour (TransientPluginMap& pluginMap,
@@ -406,7 +415,7 @@ namespace timeoffaudio {
             if (pluginDescription.loadFromXml (*pluginDescriptionXml.get())) {
                 juce::MemoryBlock stateToLoad;
                 stateToLoad.fromBase64Encoding (pluginState["encoded_state"].toString());
-                createPluginInstance (pluginMap, pluginDescription, key, stateToLoad);
+                createPluginInstance (pluginMap, pluginDescription, key, { .openAutomatically = false }, stateToLoad);
                 return;
             }
         }
