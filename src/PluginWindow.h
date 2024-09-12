@@ -43,8 +43,6 @@ namespace timeoffaudio {
         static std::string getLastYProp (Type type) { return "uiLastY_" + getTypeName (type); }
         static std::string getOpenProp (Type type) { return "uiopen_" + getTypeName (type); }
 
-        juce::BorderSize<int> getBorderThickness() override { return DocumentWindow::getBorderThickness(); }
-
         void setWindowTitlePrefix (std::string newPrefix) {
             if(newPrefix.empty())
                 setTitle (juce::String(JucePlugin_Name) + ": " + pluginInstance.getPluginDescription().name.toLowerCase());
