@@ -9,8 +9,8 @@
 #include <memory>
 
 namespace timeoffaudio {
-    PluginHost::PluginHost (juce::PropertiesFile& configFile, ConnectionsRefreshFn cF)
-        : configFile (configFile), getConnectionsFor (cF) {
+    PluginHost::PluginHost (juce::File pLF, ConnectionsRefreshFn cF)
+        : pluginListFile (pLF), getConnectionsFor (cF) {
         // TODO: this needs to be lifted outside of PluginHost so that it's customizable per
         // plugin and not fixed like it is now
         knownPlugins.setCustomScanner (
@@ -22,9 +22,12 @@ namespace timeoffaudio {
                 return true;
             }));
 
-        if (auto savedPluginList = configFile.getXmlValue ("pluginList"))
-            knownPlugins.recreateFromXml (*savedPluginList);
-        else
+        if (pluginListFile.exists()) {
+            if (auto savedPluginList = juce::parseXML (pluginListFile.loadFileAsString()))
+                knownPlugins.recreateFromXml (*savedPluginList);
+            else
+                changeListenerCallback (&knownPlugins);
+        } else
             changeListenerCallback (&knownPlugins);
 
         formatManager.addFormat (new juce::VST3PluginFormat());
@@ -212,7 +215,7 @@ namespace timeoffaudio {
 
         for (auto formatCandidate : formatManager.getFormats())
             if (formatCandidate->getName() == format && formatCandidate->canScanForPlugins()) {
-                auto failedToLoadPluginsFolder = configFile.getFile().getParentDirectory();
+                auto failedToLoadPluginsFolder = pluginListFile.getParentDirectory();
 
                 currentScan.reset (new timeoffaudio::PluginScan (
                     knownPlugins, *formatCandidate, failedToLoadPluginsFolder, onScanProgress, onScanFinished));
@@ -257,8 +260,8 @@ namespace timeoffaudio {
     void PluginHost::changeListenerCallback (juce::ChangeBroadcaster* source) {
         if (source == &knownPlugins) {
             if (auto savedPluginList = knownPlugins.createXml()) {
-                configFile.setValue ("pluginList", savedPluginList.get());
-                configFile.saveIfNeeded();
+                pluginListFile.create();
+                pluginListFile.replaceWithText (savedPluginList->toString());
             }
 
             listeners.call (&Listener::availablePluginsUpdated, knownPlugins.getTypes());
