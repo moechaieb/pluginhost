@@ -42,7 +42,7 @@ namespace timeoffaudio {
 
             std::shared_ptr<juce::AudioPluginInstance> instance;
             std::shared_ptr<PluginWindow> window;
-            imagiro::Parameter* enabledParameter;
+            juce::RangedAudioParameter* enabledParameter = nullptr;
             ConnectionList connections;
 
             Plugin() = default;
@@ -66,7 +66,7 @@ namespace timeoffaudio {
 
             Plugin (std::shared_ptr<juce::AudioPluginInstance> inst,
                 std::shared_ptr<PluginWindow> win,
-                imagiro::Parameter* enabledParameter)
+                juce::RangedAudioParameter* enabledParameter)
                 : instance (std::move (inst)), window (std::move (win)), enabledParameter (enabledParameter) {}
         };
 
@@ -74,7 +74,7 @@ namespace timeoffaudio {
         using TransientPluginMap   = PluginMap::transient_type;
         using ConnectionsRefreshFn = std::function<Plugin::ConnectionList (KeyType, const TransientPluginMap&)>;
 
-        PluginHost (
+        explicit PluginHost (
             juce::File pluginListFile,
             ConnectionsRefreshFn connectionFactory = [] (KeyType, const TransientPluginMap&) -> Plugin::ConnectionList {
                 return {};
@@ -102,12 +102,12 @@ namespace timeoffaudio {
             TransientPluginMap. This is useful for mutating the TransientPluginMap without the need
             for locking the TransientPluginMap.
         */
-        void withWriteAccess (std::function<void (TransientPluginMap&)> mutator);
+        void withWriteAccess (const std::function<void (TransientPluginMap&)>& mutator);
 
         // Templated version of withWriteAccess to control when to refresh connections
         enum class PostUpdateAction { None, RefreshConnections };
         template <PostUpdateAction action>
-        void withWriteAccess (std::function<void (TransientPluginMap&)> mutator);
+        void withWriteAccess (const std::function<void (TransientPluginMap&)>& mutator);
 
         /*
             PluginMap is passed by value to implicitly create a copy of the PluginMap inside the lambda
@@ -116,20 +116,20 @@ namespace timeoffaudio {
 
             Even if another thread updates the PluginMap, the copy inside the lambda will not be
             affected. It will be out-of-date technically, but that's okay since the next time the lambda
-            is called, the PluginMap will be a fresh copy anyways.
+            is called, the PluginMap will be a fresh copy anyway.
         */
-        void withReadOnlyAccess (std::function<void (const PluginMap)> accessor) const;
+        void withReadOnlyAccess (const std::function<void (const PluginMap)>& accessor) const;
 
         void traversePluginsFrom (KeyType key, std::function<void (Plugin)> visitor) const;
 
         // Plugin discovery
-        const juce::Array<juce::AudioPluginFormat*> getFormats() const;
-        const juce::Array<juce::PluginDescription> getAvailablePlugins() const;
+        juce::Array<juce::AudioPluginFormat*> getFormats() const;
+        juce::Array<juce::PluginDescription> getAvailablePlugins() const;
         void clearAllAvailablePlugins();
         void clearAvailablePlugin (const juce::PluginDescription& pluginToClear);
         void startScan (const juce::String& format);
         bool isScanInProgress() const;
-        void abortOngoingScan();
+        void abortOngoingScan() const;
         choc::value::Value getScanStatus() const;
 
         // Plugin Windows
@@ -148,11 +148,11 @@ namespace timeoffaudio {
         void bringPluginWindowToFront (TransientPluginMap&, KeyType key);
 
         // Plugin parameters
-        const juce::Array<juce::AudioProcessorParameter*> getParameters (KeyType key) const;
-        void beginChangeGestureForParameter (KeyType key, int parameterIndex);
-        void endChangeGestureForParameter (KeyType key, int parameterIndex);
-        void setValueForParameter (KeyType key, int parameterIndex, float value);
-        juce::String getDisplayValueForParameter (KeyType key, int parameterIndex, float value);
+        juce::Array<juce::AudioProcessorParameter*> getParameters (KeyType key) const;
+        void beginChangeGestureForParameter (const KeyType& key, int parameterIndex);
+        void endChangeGestureForParameter (const KeyType& key, int parameterIndex);
+        void setValueForParameter (const KeyType& key, int parameterIndex, float value);
+        juce::String getDisplayValueForParameter (const KeyType& key, int parameterIndex, float value) const;
         void audioProcessorParameterChanged (juce::AudioProcessor* processor,
             int parameterIndex,
             float newValue) override;
@@ -175,7 +175,7 @@ namespace timeoffaudio {
         void loadPluginFromState (TransientPluginMap& pluginMap, const choc::value::Value pluginState);
         void loadAllPluginsFromState (choc::value::Value allPluginsState);
 
-        virtual imagiro::Parameter* getEnabledParameterForKey (KeyType key) { return nullptr; }
+        virtual juce::RangedAudioParameter* getEnabledParameterForKey (KeyType key) { return nullptr; }
 
     private:
         juce::File pluginListFile;

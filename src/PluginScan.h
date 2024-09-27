@@ -1,6 +1,7 @@
 #pragma once
-#include <imagiro_processor/imagiro_processor.h>
 #include <juce_audio_processors/juce_audio_processors.h>
+
+#include <memory>
 
 namespace timeoffaudio {
     class PluginScan final : private juce::Timer {
@@ -23,28 +24,28 @@ namespace timeoffaudio {
               list (l),
               formatToScan (format),
               failedToLoadPluginsFolder (failedToLoadPluginsFolder),
-              onScanProgress (oSP),
-              onScanFinished (oSF) {
+              onScanProgress (std::move(oSP)),
+              onScanFinished (std::move(oSF)) {
             const auto blacklisted = list.getBlacklistedFiles();
-            directoryScanner.reset (new juce::PluginDirectoryScanner (list,
+            directoryScanner = std::make_unique<juce::PluginDirectoryScanner> (list,
                 formatToScan,
                 formatToScan.getDefaultLocationsToSearch(),
                 true,
                 failedToLoadPluginsFolder.getChildFile ("failedToLoadPlugins"),
-                allowAsync));
-            pool.reset(new juce::ThreadPool(juce::ThreadPoolOptions().withNumberOfThreads(numThreads)));
+                allowAsync);
+            pool = std::make_unique<juce::ThreadPool>(juce::ThreadPoolOptions().withNumberOfThreads(numThreads));
             // You need to use at least one thread when scanning plug-ins asynchronously
             jassert (!allowAsync || (numThreads > 0));
 
             start();
         }
 
-        ~PluginScan() override {}
+        ~PluginScan() override = default;
 
-        void abort() { finish(); }
-        float getProgress() const { return directoryScanner->getProgress(); }
-        juce::String getCurrentPlugin() const { return pluginBeingScanned; }
-        juce::String getFormatName() const { return formatToScan.getName(); }
+        void abort() const { finish(); }
+        [[nodiscard]] float getProgress() const { return directoryScanner->getProgress(); }
+        [[nodiscard]] juce::String getCurrentPlugin() const { return pluginBeingScanned; }
+        [[nodiscard]] juce::String getFormatName() const { return formatToScan.getName(); }
 
     private:
         bool allowAsync = false;
@@ -64,13 +65,13 @@ namespace timeoffaudio {
             startTimerHz (20);
         }
 
-        void finish() {
+        void finish() const {
             // Setting the first argument to true will interrupt the scan jobs that are currently running
             // This is important because it allows the scan to be aborted mid-way through
             pool->removeAllJobs (true, 1000);
             jassert (pool->getNumJobs() == 0);
 
-            for (auto failed : directoryScanner->getFailedFiles())
+            for (const auto& failed : directoryScanner->getFailedFiles())
                 list.addToBlacklist(failed);
 
             onScanFinished(); // This should be called last as it will cause the PluginScan to go out of scope and be destroyed
@@ -90,15 +91,15 @@ namespace timeoffaudio {
                 // This function triggers the finish() function to be called
                 // which will destroy the PluginScan object via the onScanFinished callback
                 // Therefore, it must be the very last thing to call in the lifecycle of
-                // the PluginScan object or it will result in leaks
+                // the PluginScan object, or it will result in leaks
                 finish();
             }
         }
 
         struct ScanJob final : public juce::ThreadPoolJob {
-            ScanJob (PluginScan& s) : ThreadPoolJob ("pluginScanJob"), scan (s) {}
+            explicit ScanJob (PluginScan& s) : ThreadPoolJob ("pluginScanJob"), scan (s) {}
 
-            JobStatus runJob() {
+            JobStatus runJob() override {
                 while (!shouldExit() && scan.scanNextPlugin()) {}
                 return ThreadPoolJob::JobStatus::jobHasFinished;
             }

@@ -1,16 +1,15 @@
 // project: common
 
 #include "PluginHost.h"
+
 #include "../../lib/instrumentation/Assertion.h"
 #include "./KnownPluginListScanner.h"
 #include "PluginScan.h"
 #include "PluginWindow.h"
 #include "choc/containers/choc_Value.h"
-#include <memory>
 
 namespace timeoffaudio {
-    PluginHost::PluginHost (juce::File pLF, ConnectionsRefreshFn cF)
-        : pluginListFile (pLF), getConnectionsFor (cF) {
+    PluginHost::PluginHost (juce::File pLF, ConnectionsRefreshFn cF) : pluginListFile (pLF), getConnectionsFor (cF) {
         // TODO: this needs to be lifted outside of PluginHost so that it's customizable per
         // plugin and not fixed like it is now
         knownPlugins.setCustomScanner (
@@ -26,18 +25,15 @@ namespace timeoffaudio {
             if (auto savedPluginList = juce::parseXML (pluginListFile.loadFileAsString()))
                 knownPlugins.recreateFromXml (*savedPluginList);
             else
-                changeListenerCallback (&knownPlugins);
+                PluginHost::changeListenerCallback (&knownPlugins);
         } else
-            changeListenerCallback (&knownPlugins);
+            PluginHost::changeListenerCallback (&knownPlugins);
 
         formatManager.addFormat (new juce::VST3PluginFormat());
 #if JUCE_MAC
         formatManager.addFormat (new juce::AudioUnitPluginFormat());
 #endif
         knownPlugins.addChangeListener (this);
-
-        // TODO: make a immer::differ on the plugins map so that we can intercept the removal of a plugin
-        // and remove the PluginHost as a listener on the plugin instance
     }
 
     PluginHost::~PluginHost() {
@@ -48,16 +44,23 @@ namespace timeoffaudio {
         for (auto& [_, pluginBox] : plugins) pluginBox.get().instance->removeListener (this);
     }
 
-    const juce::Array<juce::AudioPluginFormat*> PluginHost::getFormats() const { return formatManager.getFormats(); }
+    juce::Array<juce::AudioPluginFormat*> PluginHost::getFormats() const { return formatManager.getFormats(); }
 
-    const juce::Array<juce::PluginDescription> PluginHost::getAvailablePlugins() const {
-        return knownPlugins.getTypes();
-    }
+    juce::Array<juce::PluginDescription> PluginHost::getAvailablePlugins() const { return knownPlugins.getTypes(); }
 
     void PluginHost::deletePluginInstance (KeyType key) {
         withWriteAccess ([&] (TransientPluginMap& pluginMap) { deletePluginInstance (pluginMap, key); });
     }
-    void PluginHost::deletePluginInstance (TransientPluginMap& pluginMap, KeyType key) { pluginMap.erase (key); }
+    void PluginHost::deletePluginInstance (TransientPluginMap& pluginMap, KeyType key) {
+        // Before deleting a plugin, we first re-enable its plugin parameter
+        pluginMap.update (key, [&] (auto pluginBox) {
+            return pluginBox.update ([&] (auto plugin) {
+                plugin.enabledParameter->setValue (1.f);
+                return plugin;
+            });
+        });
+        pluginMap.erase (key);
+    }
 
     void PluginHost::movePluginInstance (KeyType fromKey, KeyType toKey) {
         withWriteAccess ([&] (TransientPluginMap& pluginMap) { movePluginInstance (pluginMap, fromKey, toKey); });
@@ -72,15 +75,15 @@ namespace timeoffaudio {
         if (pluginMap.find (toKey)) {
             // Swap the plugin instances and windows, if the destination key is already in use
             // Make sure to preserve the linked params by key, and only swap their values
-            auto toPluginBox     = pluginMap[toKey];
-            auto toPluginEnabled = toPluginBox->enabledParameter->getValue();
+            const auto toPluginBox = pluginMap[toKey];
+            auto toPluginEnabled   = toPluginBox->enabledParameter->getValue();
 
             pluginMap.update (toKey, [&] (auto pluginBox) {
                 return pluginBox.update ([&] (auto plugin) {
                     plugin.instance         = pluginMap[fromKey]->instance;
                     plugin.window           = pluginMap[fromKey]->window;
                     plugin.enabledParameter = getEnabledParameterForKey (toKey);
-                    plugin.enabledParameter->setValueAndNotifyHost (fromPluginEnabled);
+                    plugin.enabledParameter->setValue (fromPluginEnabled);
                     return plugin;
                 });
             });
@@ -90,7 +93,7 @@ namespace timeoffaudio {
                     plugin.instance         = toPluginBox->instance;
                     plugin.window           = toPluginBox->window;
                     plugin.enabledParameter = getEnabledParameterForKey (fromKey);
-                    plugin.enabledParameter->setValueAndNotifyHost (toPluginEnabled);
+                    plugin.enabledParameter->setValue (toPluginEnabled);
                     return plugin;
                 });
             });
@@ -102,7 +105,7 @@ namespace timeoffaudio {
                     plugin.instance         = pluginMap[fromKey]->instance;
                     plugin.window           = pluginMap[fromKey]->window;
                     plugin.enabledParameter = getEnabledParameterForKey (toKey);
-                    plugin.enabledParameter->setValueAndNotifyHost (fromPluginEnabled);
+                    plugin.enabledParameter->setValue (fromPluginEnabled);
                     return plugin;
                 });
             });
@@ -159,13 +162,13 @@ namespace timeoffaudio {
 
     template <>
     void PluginHost::withWriteAccess<PluginHost::PostUpdateAction::RefreshConnections> (
-        std::function<void (TransientPluginMap&)> mutator) {
+        const std::function<void (TransientPluginMap&)>& mutator) {
         const auto previousPlugins = plugins;
         auto transientPlugins      = previousPlugins.transient();
         mutator (transientPlugins);
 
         // Re-compute the connections after the plugin map is altered each time
-        // TODO: Can be optimised via a another custom differ:
+        // TODO: Can be optimised via a custom differ:
         // 1. If only plugin windows are altered, don't refresh connections
         // 2. If a new plugin is loaded, only refresh connections for that plugin
         // 3. If a plugin is removed, refresh connections for all plugins
@@ -189,7 +192,7 @@ namespace timeoffaudio {
 
     template <>
     void PluginHost::withWriteAccess<PluginHost::PostUpdateAction::None> (
-        std::function<void (TransientPluginMap&)> mutator) {
+        const std::function<void (TransientPluginMap&)>& mutator) {
         const auto previousPlugins = plugins;
         auto transientPlugins      = previousPlugins.transient();
         mutator (transientPlugins);
@@ -197,11 +200,13 @@ namespace timeoffaudio {
         diffAndNotifyListeners (previousPlugins, plugins);
     }
 
-    void PluginHost::withWriteAccess (std::function<void (TransientPluginMap&)> mutator) {
+    void PluginHost::withWriteAccess (const std::function<void (TransientPluginMap&)>& mutator) {
         withWriteAccess<PostUpdateAction::RefreshConnections> (mutator);
     }
 
-    void PluginHost::withReadOnlyAccess (std::function<void (const PluginMap)> accessor) const { accessor (plugins); }
+    void PluginHost::withReadOnlyAccess (const std::function<void (const PluginMap)>& accessor) const {
+        accessor (plugins);
+    }
 
     void PluginHost::startScan (const juce::String& format) {
         auto onScanProgress = [this] (float progress01, juce::String formatName, juce::String currentPlugin) {
@@ -213,17 +218,17 @@ namespace timeoffaudio {
             listeners.call (&Listener::scanFinished);
         };
 
-        for (auto formatCandidate : formatManager.getFormats())
+        for (const auto formatCandidate : formatManager.getFormats())
             if (formatCandidate->getName() == format && formatCandidate->canScanForPlugins()) {
                 auto failedToLoadPluginsFolder = pluginListFile.getParentDirectory();
 
-                currentScan.reset (new timeoffaudio::PluginScan (
-                    knownPlugins, *formatCandidate, failedToLoadPluginsFolder, onScanProgress, onScanFinished));
+                currentScan = std::make_unique<timeoffaudio::PluginScan> (
+                    knownPlugins, *formatCandidate, failedToLoadPluginsFolder, onScanProgress, onScanFinished);
                 break;
             }
     }
 
-    void PluginHost::abortOngoingScan() {
+    void PluginHost::abortOngoingScan() const {
         if (currentScan != nullptr) currentScan->abort();
     }
 
@@ -259,9 +264,11 @@ namespace timeoffaudio {
 
     void PluginHost::changeListenerCallback (juce::ChangeBroadcaster* source) {
         if (source == &knownPlugins) {
-            if (auto savedPluginList = knownPlugins.createXml()) {
-                pluginListFile.create();
-                pluginListFile.replaceWithText (savedPluginList->toString());
+            if (const auto savedPluginList = knownPlugins.createXml()) {
+                auto saveResult = pluginListFile.create();
+                jassert (saveResult.wasOk());
+                auto writeSuccessful = pluginListFile.replaceWithText (savedPluginList->toString());
+                jassert (writeSuccessful);
             }
 
             listeners.call (&Listener::availablePluginsUpdated, knownPlugins.getTypes());
@@ -269,11 +276,10 @@ namespace timeoffaudio {
     }
 
     void PluginHost::process (const Plugin& plugin, juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages) {
-        auto instance        = plugin.instance.get();
-        auto bypassParameter = instance->getBypassParameter();
-        bool isEnabled       = plugin.enabledParameter->getValue() == 1.f;
+        const auto instance        = plugin.instance.get();
+        const auto bypassParameter = instance->getBypassParameter();
 
-        if (!isEnabled && !bypassParameter) {
+        if (const bool isEnabled = plugin.enabledParameter->getValue() >= 0.5f; !isEnabled && !bypassParameter) {
             // When getBypassParameter() returns a nullptr, we need to bypass the plugin
             // by calling processBlockBypassed
             instance->processBlockBypassed (buffer, midiMessages);
@@ -292,7 +298,7 @@ namespace timeoffaudio {
 
         withReadOnlyAccess ([&] (const PluginMap& pluginMap) {
             for (auto& [key, pluginBox] : pluginMap) {
-                auto instance = pluginBox.get().instance.get();
+                const auto instance = pluginBox.get().instance.get();
 
                 instance->enableAllBuses();
                 instance->prepareToPlay (sampleRate, blockSize);
@@ -302,7 +308,7 @@ namespace timeoffaudio {
     }
 
     void PluginHost::openPluginWindow (TransientPluginMap& pluginMap, std::string key, PluginWindow::Options options) {
-        pluginMap.update_if_exists (key, [&] (auto pluginBox) {
+        pluginMap.update_if_exists (std::move (key), [&] (auto pluginBox) {
             return pluginBox.update ([&] (auto plugin) {
                 if (auto pluginWindow = plugin.window) {
                     pluginWindow->setWindowTitlePrefix (options.titlePrefix);
@@ -330,7 +336,7 @@ namespace timeoffaudio {
     void PluginHost::updatePluginWindowBorderColour (TransientPluginMap& pluginMap,
         std::string key,
         juce::Colour colour) {
-        pluginMap.update_if_exists (key, [&] (auto pluginBox) {
+        pluginMap.update_if_exists (std::move (key), [&] (auto pluginBox) {
             return pluginBox.update ([&] (auto plugin) {
                 if (auto pluginWindow = plugin.window) pluginWindow->setBackgroundColour (colour);
                 return plugin;
@@ -350,7 +356,7 @@ namespace timeoffaudio {
     }
 
     void PluginHost::closePluginWindow (TransientPluginMap& pluginMap, std::string key) {
-        pluginMap.update_if_exists (key, [&] (auto pluginBox) {
+        pluginMap.update_if_exists (std::move (key), [&] (auto pluginBox) {
             return pluginBox.update ([&] (auto plugin) {
                 if (auto pluginWindow = plugin.window) pluginWindow->setVisible (false);
                 return plugin;
@@ -360,7 +366,7 @@ namespace timeoffaudio {
 
     void PluginHost::closeAllPluginWindows() {
         withWriteAccess<PluginHost::PostUpdateAction::None> ([&] (PluginHost::TransientPluginMap& pluginMap) {
-            for (auto& plugin : pluginMap) closePluginWindow (pluginMap, plugin.first);
+            for (const auto& [key, snd] : pluginMap) closePluginWindow (pluginMap, key);
         });
     }
 
@@ -370,7 +376,7 @@ namespace timeoffaudio {
     }
 
     void PluginHost::bringPluginWindowToFront (TransientPluginMap& pluginMap, KeyType key) {
-        pluginMap.update_if_exists (key, [&] (auto pluginBox) {
+        pluginMap.update_if_exists (std::move (key), [&] (auto pluginBox) {
             return pluginBox.update ([&] (auto plugin) {
                 if (auto pluginWindow = plugin.window) pluginWindow->toFront (false);
                 return plugin;
@@ -381,8 +387,8 @@ namespace timeoffaudio {
     choc::value::Value PluginHost::getPluginState (KeyType key, const PluginMap pluginMap) const {
         auto pluginState = choc::value::createObject ("PluginState");
 
-        if (auto pluginBox = pluginMap.find (key)) {
-            auto pluginDescriptionXml = pluginBox->get().instance->getPluginDescription().createXml();
+        if (const auto pluginBox = pluginMap.find (key)) {
+            const auto pluginDescriptionXml = pluginBox->get().instance->getPluginDescription().createXml();
             if (!pluginDescriptionXml) {
                 timeoffaudio_assert (false);
                 return pluginState;
@@ -411,11 +417,10 @@ namespace timeoffaudio {
     }
 
     void PluginHost::loadPluginFromState (TransientPluginMap& pluginMap, const choc::value::Value pluginState) {
-        auto key = pluginState["key"].toString();
-        juce::PluginDescription pluginDescription;
+        const auto key = pluginState["key"].toString();
 
-        if (auto pluginDescriptionXml = juce::XmlDocument::parse (pluginState["description"].toString())) {
-            if (pluginDescription.loadFromXml (*pluginDescriptionXml.get())) {
+        if (const auto pluginDescriptionXml = juce::XmlDocument::parse (pluginState["description"].toString())) {
+            if (juce::PluginDescription pluginDescription; pluginDescription.loadFromXml (*pluginDescriptionXml)) {
                 juce::MemoryBlock stateToLoad;
                 stateToLoad.fromBase64Encoding (pluginState["encoded_state"].toString());
                 createPluginInstance (pluginMap, pluginDescription, key, { .openAutomatically = false }, stateToLoad);
@@ -433,13 +438,13 @@ namespace timeoffaudio {
         });
     }
 
-    const juce::Array<juce::AudioProcessorParameter*> PluginHost::getParameters (KeyType key) const {
+    juce::Array<juce::AudioProcessorParameter*> PluginHost::getParameters (KeyType key) const {
         // Filter out parameters that start with "midi cc", "internal", or "bypass", etc
-        if (auto pluginBox = plugins.find (key)) {
+        if (const auto pluginBox = plugins.find (key)) {
             auto parameters = pluginBox->get().instance->getParameters();
 
-            parameters.removeIf ([] (juce::AudioProcessorParameter* param) {
-                for (auto prefix : { "midi cc", "internal", "bypass", "reserved" })
+            parameters.removeIf ([] (const juce::AudioProcessorParameter* param) {
+                for (const auto prefix : { "midi cc", "internal", "bypass", "reserved", "in", "out", "-" })
                     if (param->getName (1024).toLowerCase().startsWith (prefix)) return true;
 
                 return false;
@@ -457,10 +462,10 @@ namespace timeoffaudio {
         withReadOnlyAccess ([&] (const PluginMap& pluginMap) {
             // TODO: this is not very efficient, but it's the simplest way to get the key
             // figure out how to get the key from the PluginMap without scanning the whole map
-            auto pluginBox = pluginMap.find (key);
+            const auto pluginBox = pluginMap.find (key);
             if (!pluginBox) return;
 
-            auto pluginInstance = pluginBox->get().instance.get();
+            const auto pluginInstance = pluginBox->get().instance.get();
             if (!pluginInstance) return;
             parameter = pluginInstance->getHostedParameter (parameterIndex);
         });
@@ -468,23 +473,25 @@ namespace timeoffaudio {
         return parameter;
     }
 
-    void PluginHost::beginChangeGestureForParameter (KeyType key, int parameterIndex) {
-        if (auto parameter = getParameter (key, parameterIndex)) return parameter->beginChangeGesture();
+    void PluginHost::beginChangeGestureForParameter (const KeyType& key, const int parameterIndex) {
+        if (const auto parameter = getParameter (key, parameterIndex)) return parameter->beginChangeGesture();
         // TODO: add error notification here
     }
 
-    void PluginHost::endChangeGestureForParameter (KeyType key, int parameterIndex) {
-        if (auto parameter = getParameter (key, parameterIndex)) return parameter->endChangeGesture();
+    void PluginHost::endChangeGestureForParameter (const KeyType& key, const int parameterIndex) {
+        if (const auto parameter = getParameter (key, parameterIndex)) return parameter->endChangeGesture();
         // TODO: add error notification here
     }
 
-    void PluginHost::setValueForParameter (KeyType key, int parameterIndex, float value) {
-        if (auto parameter = getParameter (key, parameterIndex)) return parameter->setValue (value);
+    void PluginHost::setValueForParameter (const KeyType& key, const int parameterIndex, const float value) {
+        if (const auto parameter = getParameter (key, parameterIndex)) return parameter->setValue (value);
         // TODO: add error notification here
     }
 
-    juce::String PluginHost::getDisplayValueForParameter (KeyType key, int parameterIndex, float value) {
-        if (auto parameter = getParameter (key, parameterIndex)) return parameter->getText (value, 1024);
+    juce::String PluginHost::getDisplayValueForParameter (const KeyType& key,
+        const int parameterIndex,
+        const float value) const {
+        if (const auto parameter = getParameter (key, parameterIndex)) return parameter->getText (value, 1024);
 
         return {};
     }
@@ -492,7 +499,7 @@ namespace timeoffaudio {
     void PluginHost::audioProcessorParameterChanged (juce::AudioProcessor* processor,
         int parameterIndex,
         float newValue) {
-        auto pluginInstance = dynamic_cast<juce::AudioPluginInstance*> (processor);
+        const auto pluginInstance = dynamic_cast<juce::AudioPluginInstance*> (processor);
         if (!pluginInstance) return;
 
         withReadOnlyAccess ([&] (const PluginMap& pluginMap) {
@@ -518,11 +525,11 @@ namespace timeoffaudio {
         DBG ("=============================== Plugin Host State ===============================");
         withReadOnlyAccess ([&] (const PluginMap& pluginMap) {
             DBG ("Number of plugins: " + juce::String (pluginMap.size()));
-            for (auto [key, pluginBox] : pluginMap) {
-                if (auto instance = pluginBox->instance) {
+            for (const auto& [key, pluginBox] : pluginMap) {
+                if (const auto instance = pluginBox->instance) {
                     DBG ("Plugin at key " + std::string (key) + " is " + instance->getName().toStdString());
-                    if (auto enabledParam = pluginBox->enabledParameter) {
-                        DBG ("Plugin linked enabled parameter UID: " + juce::String (enabledParam->getUID()));
+                    if (const auto enabledParam = pluginBox->enabledParameter) {
+                        DBG ("Plugin linked enabled parameter UID: " + juce::String (enabledParam->getParameterID()));
                         DBG ("Plugin linked enabled parameter name: " + juce::String (enabledParam->getName (1024)));
                         DBG ("Plugin linked enabled parameter value: " + juce::String (enabledParam->getValue()));
                     }
