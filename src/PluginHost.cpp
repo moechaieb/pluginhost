@@ -40,6 +40,7 @@ namespace timeoffaudio {
         timeoffaudio_assert (listeners.isEmpty());
 
         stopTimer();
+        abortOngoingScan();
 
         knownPlugins.removeChangeListener (this);
         for (auto& [_, pluginBox] : nonRealtimeSafePlugins) pluginBox.get().instance->removeListener (this);
@@ -329,7 +330,7 @@ namespace timeoffaudio {
             }
 
             {
-                const juce::ScopedReadLock lock (listenersLock);
+                const juce::ScopedWriteLock lock (listenersLock);
                 listeners.call (&Listener::availablePluginsUpdated, knownPlugins.getTypes());
             }
         }
