@@ -12,7 +12,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 
 namespace timeoffaudio {
-    class PluginHost : private juce::ChangeListener, private juce::AudioProcessorListener {
+    class PluginHost : private juce::ChangeListener, private juce::AudioProcessorListener, private juce::Timer {
     public:
         using KeyType = std::string;
 
@@ -177,10 +177,9 @@ namespace timeoffaudio {
         int blockSize;
         juce::AudioPlayHead* playhead;
 
-        PluginMap realtimeSafePlugins;
-        PluginMap nonRealtimeSafePlugins;
+        PluginMap realtimeSafePlugins, nonRealtimeSafePlugins, deallocationCopyPlugins;
         moodycamel::ReaderWriterQueue<PluginMap> synchronizationQueue { 100 };
-
+        moodycamel::ReaderWriterQueue<PluginMap> deallocationQueue { 100 };
 
         ConnectionsRefreshFn getConnectionsFor;
 
@@ -225,6 +224,27 @@ namespace timeoffaudio {
                         // its connections have been updated, etc
                         // TODO: add other listener notifications here for in-place plugin updates as needed
                     }));
+        }
+
+        void timerCallback() override {
+            // We want to ensure that we keep a copy of the plugin map that is only used to ensure that we don't
+            // deallocate on the RT thread
+            // Why? Without this extra @deallocationCopyPlugins, we run into the risk of realtimeSafePlugins being the
+            // last holding on to certain memory (like when a plugin is deleted)
+            // This will trigger a deallocation on the realtime thread, which is NOT realtime safe.
+
+            // Instead, we keep this extra deallocationCopyPlugins, and run this loop on the message thread to ensure
+            // these deallocations happen away from the realtime thread
+            // We can technically run this on any non-RT thread, as long as it's synchronized with the message thread
+            while(deallocationQueue.try_dequeue(deallocationCopyPlugins)) {}
+        }
+
+        static void assertMessageThread() {
+#if JUCE_DEBUG
+            if (const auto messageManager = juce::MessageManager::getInstanceWithoutCreating();
+                !messageManager->isThisTheMessageThread())
+                jassertfalse;
+#endif
         }
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PluginHost)

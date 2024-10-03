@@ -7,7 +7,7 @@
 namespace timeoffaudio {
     class PluginWindow final : public juce::DocumentWindow {
     public:
-        enum class Type { normal = 0, generic, debug, araHost, numTypes };
+        enum class Type { normal = 0, generic, debug, numTypes };
 
         struct Options {
             int xPos = 0;
@@ -16,14 +16,14 @@ namespace timeoffaudio {
             std::string titlePrefix = JucePlugin_Name;
         };
 
-        PluginWindow (juce::AudioPluginInstance& pI, int xPos = 100, int yPos = 100, Type t = Type::normal, std::string windowTitlePrefix = JucePlugin_Name)
+        explicit PluginWindow (juce::AudioPluginInstance& pI,
+            const int xPos = 100,
+            const int yPos = 100, Type t = Type::normal, const std::string& windowTitlePrefix = JucePlugin_Name)
             : DocumentWindow (juce::String(windowTitlePrefix) + ": " + pI.getPluginDescription().name.toLowerCase(),
                   juce::Colours::black,
                   DocumentWindow::closeButton),
               pluginInstance (pI),
               type (t) {
-            setSize (400, 300);
-
             if (auto* ui = createProcessorEditor (pluginInstance, type)) {
                 setContentOwned (ui, true);
                 setResizable (ui->isResizable(), false);
@@ -32,10 +32,10 @@ namespace timeoffaudio {
 
             setTopLeftPosition (xPos, yPos);
             setAlwaysOnTop (true);
-            setVisible (true);
+            Component::setVisible (true);
         }
 
-        ~PluginWindow() override { clearContentComponent(); }
+        ~PluginWindow() override = default;
 
         void closeButtonPressed() override { setVisible (false); }
 
@@ -91,14 +91,6 @@ namespace timeoffaudio {
                 type = PluginWindow::Type::generic;
             }
 
-            if (type == PluginWindow::Type::araHost) {
-#if JUCE_PLUGINHOST_ARA && (JUCE_MAC || JUCE_WINDOWS || JUCE_LINUX)
-                if (auto* araPluginInstanceWrapper = dynamic_cast<ARAPluginInstanceWrapper*> (&processor))
-                    if (auto* ui = araPluginInstanceWrapper->createARAHostEditor()) return ui;
-#endif
-                return {};
-            }
-
             if (type == PluginWindow::Type::generic) {
                 auto* result = new juce::GenericAudioProcessorEditor (pluginInstance);
                 result->setResizeLimits (200, 300, 1'000, 10'000);
@@ -119,8 +111,6 @@ namespace timeoffaudio {
                     return "Generic";
                 case Type::debug:
                     return "Debug";
-                case Type::araHost:
-                    return "ARAHost";
                 case Type::numTypes:
                 default:
                     return {};

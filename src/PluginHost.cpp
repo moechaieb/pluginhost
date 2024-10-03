@@ -8,6 +8,7 @@
 
 namespace timeoffaudio {
     PluginHost::PluginHost (juce::File pLF, ConnectionsRefreshFn cF) : pluginListFile (pLF), getConnectionsFor (cF) {
+        startTimerHz (120);
         // TODO: this needs to be lifted outside of PluginHost so that it's customizable per
         // plugin and not fixed like it is now
         knownPlugins.setCustomScanner (
@@ -37,6 +38,8 @@ namespace timeoffaudio {
     PluginHost::~PluginHost() {
         timeoffaudio_assert (isScanInProgress() == false);
         timeoffaudio_assert (listeners.isEmpty());
+
+        stopTimer();
 
         knownPlugins.removeChangeListener (this);
         for (auto& [_, pluginBox] : nonRealtimeSafePlugins) pluginBox.get().instance->removeListener (this);
@@ -165,8 +168,10 @@ namespace timeoffaudio {
     template <>
     void PluginHost::withWriteAccess<PluginHost::PostUpdateAction::RefreshConnections> (
         const std::function<void (TransientPluginMap&)>& mutator) {
+        assertMessageThread();
+
         auto previousNonRealtimeSafePlugins = nonRealtimeSafePlugins;
-        auto transientPlugins = nonRealtimeSafePlugins.transient();
+        auto transientPlugins               = nonRealtimeSafePlugins.transient();
         mutator (transientPlugins);
 
         // Re-compute the connections after the plugin map is altered each time
@@ -189,10 +194,10 @@ namespace timeoffaudio {
         }
 
         nonRealtimeSafePlugins = transientPlugins.persistent();
-        auto result = synchronizationQueue.enqueue (nonRealtimeSafePlugins);
-        jassert(result);
-
         diffAndNotifyListeners(previousNonRealtimeSafePlugins, nonRealtimeSafePlugins);
+
+        auto result = synchronizationQueue.enqueue (nonRealtimeSafePlugins);
+        jassert (result);
     }
 
     /*
@@ -202,15 +207,18 @@ namespace timeoffaudio {
     template <>
     void PluginHost::withWriteAccess<PluginHost::PostUpdateAction::None> (
         const std::function<void (TransientPluginMap&)>& mutator) {
+        assertMessageThread();
+
         auto previousNonRealtimeSafePlugins = nonRealtimeSafePlugins;
-        auto transientPlugins = nonRealtimeSafePlugins.transient();
+        auto transientPlugins               = nonRealtimeSafePlugins.transient();
+
         mutator (transientPlugins);
+
         nonRealtimeSafePlugins = transientPlugins.persistent();
+        diffAndNotifyListeners(previousNonRealtimeSafePlugins, nonRealtimeSafePlugins);
 
         auto result = synchronizationQueue.enqueue (nonRealtimeSafePlugins);
-        jassert(result);
-
-        diffAndNotifyListeners(previousNonRealtimeSafePlugins, nonRealtimeSafePlugins);
+        jassert (result);
     }
 
     /*
@@ -225,6 +233,8 @@ namespace timeoffaudio {
      * Use this to access the plugin graph from the non-realtime thread, in a read-only fashion.
      */
     void PluginHost::withReadonlyAccess (const std::function<void (PluginMap)>& accessor) const {
+        assertMessageThread();
+
         accessor (nonRealtimeSafePlugins);
     }
 
@@ -232,10 +242,19 @@ namespace timeoffaudio {
      * Use this to access the plugin graph from the realtime thread.
      */
     void PluginHost::withRealtimeAccess (const std::function<void (const PluginMap&)>& accessor) {
+        bool isNewCopy = false;
         // Get the latest PluginMap submitted for the realtime thread
-        while (synchronizationQueue.try_dequeue (realtimeSafePlugins)) {}
+        while (synchronizationQueue.try_dequeue (realtimeSafePlugins)) {
+            isNewCopy = true;
+        }
+
         // Access the realtime-safe copy of the plugin map
         accessor (realtimeSafePlugins);
+
+        if (isNewCopy) {
+            auto result = deallocationQueue.try_enqueue (realtimeSafePlugins);
+            jassert (result);
+        }
     }
 
     void PluginHost::startScan (const juce::String& format) {
@@ -319,17 +338,24 @@ namespace timeoffaudio {
     void PluginHost::process (const Plugin& plugin,
         juce::AudioBuffer<float>& buffer,
         juce::MidiBuffer& midiMessages) /* context: realtime */ {
-        const auto instance        = plugin.instance.get();
-        const auto bypassParameter = instance->getBypassParameter();
+        const auto instance = plugin.instance.get();
 
-        if (const bool isEnabled = plugin.enabledParameter->getValue() >= 0.5f; !isEnabled && !bypassParameter) {
+        if (const auto bypassParameter = instance->getBypassParameter(); !bypassParameter) {
             // When getBypassParameter() returns a nullptr, we need to bypass the plugin
             // by calling processBlockBypassed
             instance->processBlockBypassed (buffer, midiMessages);
         } else {
             // When getBypassParameter() returns a valid pointer, we need to
             // set the bypass parameter, and process the plugin normally via processBlock
-            bypassParameter->setValue (!isEnabled);
+
+            // For safety, let's check that we have defined an "enabled parameter" from the host application/plugin
+            if (plugin.enabledParameter) {
+                const bool isEnabled = plugin.enabledParameter->getValue() >= 0.5f;
+                bypassParameter->setValue (!isEnabled);
+            } else {
+                jassertfalse;
+            }
+
             instance->processBlock (buffer, midiMessages);
         }
     }
@@ -466,7 +492,7 @@ namespace timeoffaudio {
                 juce::MemoryBlock stateToLoad;
                 stateToLoad.fromBase64Encoding (pluginState["encoded_state"].toString());
                 createPluginInstance (pluginMap, pluginDescription, key, { .openAutomatically = false }, stateToLoad);
-                return ;
+                return;
             }
         }
 
@@ -477,7 +503,6 @@ namespace timeoffaudio {
         withWriteAccess<PluginHost::PostUpdateAction::RefreshConnections> ([&] (TransientPluginMap& pluginMap) {
             for (const auto pluginState : allPluginsState)
                 loadPluginFromState (pluginMap, choc::value::Value (pluginState));
-
         });
     }
 
