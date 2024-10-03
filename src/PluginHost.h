@@ -100,17 +100,78 @@ namespace timeoffaudio {
             TransientPluginMap is passed by reference to the lambda, so the lambda can mutate the
             TransientPluginMap. This is useful for mutating the TransientPluginMap without the need
             for locking the TransientPluginMap.
+
+            Use this to write to the plugin graph from the non-realtime thread.
+            This will re-compute the connections of each node in the graph when using the RefreshConnections PostUpdateAction flag.
         */
-        void withWriteAccess (const std::function<void (TransientPluginMap&)>& mutator);
-
-        // Templated version of withWriteAccess to control when to refresh connections
         enum class PostUpdateAction { None, RefreshConnections };
-        template <PostUpdateAction action>
-        void withWriteAccess (const std::function<void (TransientPluginMap&)>& mutator);
+        template <typename NonRealtimeMutator>
+        void withWriteAccess (NonRealtimeMutator&& mutator,
+            PostUpdateAction postUpdateAction = PostUpdateAction::None) {
+            assertMessageThread();
 
-        void withReadonlyAccess (const std::function<void (PluginMap)>& accessor) const;
+            auto previousNonRealtimeSafePlugins = nonRealtimeSafePlugins;
+            auto transientPlugins               = nonRealtimeSafePlugins.transient();
+            std::forward<NonRealtimeMutator>(mutator) (transientPlugins);
 
-        void withRealtimeAccess (const std::function<void (const PluginMap&)>& accessor);
+            // Re-compute the connections after the plugin map is altered each time
+            // TODO: Can be optimised via a custom differ:
+            // 1. If only plugin windows are altered, don't refresh connections
+            // 2. If a new plugin is loaded, only refresh connections for that plugin
+            // 3. If a plugin is removed, refresh connections for all plugins
+            // 4. If plugins are swapped, refresh connections for all plugins
+            // immer::diff (plugins,
+            //     transientPlugins.persistent(),
+            //     immer::make_differ ([] (const auto& added) { /* handle added elements */ },
+            //         [] (const auto& removed) { /* handle removed elements */ },π
+            //         [] (const auto& changed) { /* handle changed elements */ }));
+
+            if (postUpdateAction == PostUpdateAction::RefreshConnections) {
+                for (auto& [key, pluginBox] : transientPlugins) {
+                    transientPlugins.set (key, pluginBox.update ([&, key] (auto plugin) {
+                        plugin.connections = getConnectionsFor (key, transientPlugins);
+                        return plugin;
+                    }));
+                }
+            }
+
+            nonRealtimeSafePlugins = transientPlugins.persistent();
+            diffAndNotifyListeners (previousNonRealtimeSafePlugins, nonRealtimeSafePlugins);
+
+            auto result = synchronizationQueue.enqueue (nonRealtimeSafePlugins);
+            jassert (result);
+        }
+
+        /*
+            Use this to access the plugin graph from the non-realtime thread, in a read-only fashion.
+        */
+        template <typename NonRealtimeReadonlyAccessor>
+        void withReadonlyAccess (NonRealtimeReadonlyAccessor&& accessor) const {
+            assertMessageThread();
+
+            // Access the non-realtime-safe copy of the plugin map, which is set to const& to ensure it's read-only
+            std::forward<NonRealtimeReadonlyAccessor> (accessor) (static_cast<const PluginMap&>(nonRealtimeSafePlugins));
+        }
+
+        /*
+            Use this to access the plugin graph from the realtime thread.
+        */
+        template <typename RealtimeAccessor>
+        void withRealtimeAccess (RealtimeAccessor&& accessor) {
+            bool isNewCopy = false;
+            // Get the latest PluginMap submitted for the realtime thread
+            while (synchronizationQueue.try_dequeue (realtimeSafePlugins)) {
+                isNewCopy = true;
+            }
+
+            // Access the realtime-safe copy of the plugin map, which is set to const& to ensure it's read-only
+            std::forward<RealtimeAccessor> (accessor) (static_cast<const PluginMap&>(realtimeSafePlugins));
+
+            if (isNewCopy) {
+                auto result = deallocationQueue.try_enqueue (realtimeSafePlugins);
+                jassert (result);
+            }
+        }
 
         void traversePluginsFrom (KeyType key, std::function<void (Plugin)> visitor) const;
 
@@ -236,7 +297,8 @@ namespace timeoffaudio {
             // Instead, we keep this extra deallocationCopyPlugins, and run this loop on the message thread to ensure
             // these deallocations happen away from the realtime thread
             // We can technically run this on any non-RT thread, as long as it's synchronized with the message thread
-            while(deallocationQueue.try_dequeue(deallocationCopyPlugins)) {}
+            while (deallocationQueue.try_dequeue (deallocationCopyPlugins)) {
+            }
         }
 
         static void assertMessageThread() {

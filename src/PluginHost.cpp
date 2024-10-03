@@ -162,101 +162,8 @@ namespace timeoffaudio {
         }
     }
 
-    /*
-     * Use this to write to the plugin graph from the non-realtime thread.
-     * This will not re-compute the connections of each node in the graph.
-     */
-    template <>
-    void PluginHost::withWriteAccess<PluginHost::PostUpdateAction::RefreshConnections> (
-        const std::function<void (TransientPluginMap&)>& mutator) {
-        assertMessageThread();
 
-        auto previousNonRealtimeSafePlugins = nonRealtimeSafePlugins;
-        auto transientPlugins               = nonRealtimeSafePlugins.transient();
-        mutator (transientPlugins);
 
-        // Re-compute the connections after the plugin map is altered each time
-        // TODO: Can be optimised via a custom differ:
-        // 1. If only plugin windows are altered, don't refresh connections
-        // 2. If a new plugin is loaded, only refresh connections for that plugin
-        // 3. If a plugin is removed, refresh connections for all plugins
-        // 4. If plugins are swapped, refresh connections for all plugins
-        // immer::diff (plugins,
-        //     transientPlugins.persistent(),
-        //     immer::make_differ ([] (const auto& added) { /* handle added elements */ },
-        //         [] (const auto& removed) { /* handle removed elements */ },π
-        //         [] (const auto& changed) { /* handle changed elements */ }));
-
-        for (auto& [key, pluginBox] : transientPlugins) {
-            transientPlugins.set (key, pluginBox.update ([&, key] (auto plugin) {
-                plugin.connections = getConnectionsFor (key, transientPlugins);
-                return plugin;
-            }));
-        }
-
-        nonRealtimeSafePlugins = transientPlugins.persistent();
-        diffAndNotifyListeners(previousNonRealtimeSafePlugins, nonRealtimeSafePlugins);
-
-        auto result = synchronizationQueue.enqueue (nonRealtimeSafePlugins);
-        jassert (result);
-    }
-
-    /*
-     * Use this to write to the plugin graph from the non-realtime thread.
-     * This will not re-compute the connections of each node in the graph.
-     */
-    template <>
-    void PluginHost::withWriteAccess<PluginHost::PostUpdateAction::None> (
-        const std::function<void (TransientPluginMap&)>& mutator) {
-        assertMessageThread();
-
-        auto previousNonRealtimeSafePlugins = nonRealtimeSafePlugins;
-        auto transientPlugins               = nonRealtimeSafePlugins.transient();
-
-        mutator (transientPlugins);
-
-        nonRealtimeSafePlugins = transientPlugins.persistent();
-        diffAndNotifyListeners(previousNonRealtimeSafePlugins, nonRealtimeSafePlugins);
-
-        auto result = synchronizationQueue.enqueue (nonRealtimeSafePlugins);
-        jassert (result);
-    }
-
-    /*
-     * Use this to write to the plugin graph from the non-realtime thread.
-     * This will re-compute the connections of each node in the graph.
-     */
-    void PluginHost::withWriteAccess (const std::function<void (TransientPluginMap&)>& mutator) {
-        withWriteAccess<PostUpdateAction::RefreshConnections> (mutator);
-    }
-
-    /*
-     * Use this to access the plugin graph from the non-realtime thread, in a read-only fashion.
-     */
-    void PluginHost::withReadonlyAccess (const std::function<void (PluginMap)>& accessor) const {
-        assertMessageThread();
-
-        accessor (nonRealtimeSafePlugins);
-    }
-
-    /*
-     * Use this to access the plugin graph from the realtime thread.
-     */
-    void PluginHost::withRealtimeAccess (const std::function<void (const PluginMap&)>& accessor) {
-        bool isNewCopy = false;
-        // Get the latest PluginMap submitted for the realtime thread
-        while (synchronizationQueue.try_dequeue (realtimeSafePlugins)) {
-            isNewCopy = true;
-        }
-
-        // Access the realtime-safe copy of the plugin map
-        accessor (realtimeSafePlugins);
-
-        if (isNewCopy) {
-            auto result = deallocationQueue.try_enqueue (realtimeSafePlugins);
-            jassert (result);
-        }
-    }
 
     void PluginHost::startScan (const juce::String& format) {
         auto onScanProgress = [this] (float progress01, juce::String formatName, juce::String currentPlugin) {
@@ -366,7 +273,7 @@ namespace timeoffaudio {
         blockSize  = newBlockSize;
         playhead   = newPlayhead;
 
-        withWriteAccess<PluginHost::PostUpdateAction::None> ([&] (const PluginHost::TransientPluginMap& pluginMap) {
+        withWriteAccess ([&] (const PluginHost::TransientPluginMap& pluginMap) {
             for (auto& [key, pluginBox] : pluginMap) {
                 const auto instance = pluginBox.get().instance.get();
 
@@ -399,7 +306,7 @@ namespace timeoffaudio {
     }
 
     void PluginHost::openPluginWindow (std::string key, PluginWindow::Options options) {
-        withWriteAccess<PluginHost::PostUpdateAction::None> (
+        withWriteAccess (
             [&] (PluginHost::TransientPluginMap& pluginMap) { openPluginWindow (pluginMap, key, options); });
     }
 
@@ -415,13 +322,13 @@ namespace timeoffaudio {
     }
 
     void PluginHost::updatePluginWindowBorderColour (std::string key, juce::Colour colour) {
-        withWriteAccess<PluginHost::PostUpdateAction::None> ([&] (PluginHost::TransientPluginMap& pluginMap) {
+        withWriteAccess ([&] (PluginHost::TransientPluginMap& pluginMap) {
             updatePluginWindowBorderColour (pluginMap, key, colour);
         });
     }
 
     void PluginHost::closePluginWindow (std::string key) {
-        withWriteAccess<PluginHost::PostUpdateAction::None> (
+        withWriteAccess (
             [&] (PluginHost::TransientPluginMap& pluginMap) { closePluginWindow (pluginMap, key); });
     }
 
@@ -435,13 +342,13 @@ namespace timeoffaudio {
     }
 
     void PluginHost::closeAllPluginWindows() {
-        withWriteAccess<PluginHost::PostUpdateAction::None> ([&] (PluginHost::TransientPluginMap& pluginMap) {
+        withWriteAccess ([&] (PluginHost::TransientPluginMap& pluginMap) {
             for (const auto& [key, snd] : pluginMap) closePluginWindow (pluginMap, key);
         });
     }
 
     void PluginHost::bringPluginWindowToFront (KeyType key) {
-        withWriteAccess<PluginHost::PostUpdateAction::None> (
+        withWriteAccess (
             [&] (PluginHost::TransientPluginMap& pluginMap) { bringPluginWindowToFront (pluginMap, key); });
     }
 
@@ -501,10 +408,10 @@ namespace timeoffaudio {
     }
 
     void PluginHost::loadAllPluginsFromState (const choc::value::Value& allPluginsState) {
-        withWriteAccess<PluginHost::PostUpdateAction::RefreshConnections> ([&] (TransientPluginMap& pluginMap) {
+        withWriteAccess ([&] (TransientPluginMap& pluginMap) {
             for (const auto pluginState : allPluginsState)
                 loadPluginFromState (pluginMap, choc::value::Value (pluginState));
-        });
+        }, PostUpdateAction::RefreshConnections);
     }
 
     juce::Array<juce::AudioProcessorParameter*> PluginHost::getParameters (KeyType key) const {
