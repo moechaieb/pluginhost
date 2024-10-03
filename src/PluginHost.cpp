@@ -1,5 +1,3 @@
-// project: common
-
 #include "PluginHost.h"
 
 #include "../../lib/instrumentation/Assertion.h"
@@ -41,7 +39,7 @@ namespace timeoffaudio {
         timeoffaudio_assert (listeners.isEmpty());
 
         knownPlugins.removeChangeListener (this);
-        for (auto& [_, pluginBox] : plugins) pluginBox.get().instance->removeListener (this);
+        for (auto& [_, pluginBox] : nonRealtimeSafePlugins) pluginBox.get().instance->removeListener (this);
     }
 
     juce::Array<juce::AudioPluginFormat*> PluginHost::getFormats() const { return formatManager.getFormats(); }
@@ -127,10 +125,10 @@ namespace timeoffaudio {
                     format->createInstanceFromDescription (pluginDescription, sampleRate, blockSize, errorMessage);
 
                 if (errorMessage.isNotEmpty() || !instance) {
+                    const juce::ScopedReadLock lock (listenersLock);
                     logParameters.set ("success", "false");
                     logParameters.set ("error_message", errorMessage);
-                    // TODO: handle plugin loading errors here and notify listeners of error
-                    // listeners.call (&Listener::pluginInstanceLoadFailed, key, errorMessage);
+                    listeners.call (&Listener::pluginInstanceLoadFailed, key, errorMessage.toStdString());
                     return;
                 }
 
@@ -160,11 +158,15 @@ namespace timeoffaudio {
         }
     }
 
+    /*
+     * Use this to write to the plugin graph from the non-realtime thread.
+     * This will not re-compute the connections of each node in the graph.
+     */
     template <>
     void PluginHost::withWriteAccess<PluginHost::PostUpdateAction::RefreshConnections> (
         const std::function<void (TransientPluginMap&)>& mutator) {
-        const auto previousPlugins = plugins;
-        auto transientPlugins      = previousPlugins.transient();
+        auto previousNonRealtimeSafePlugins = nonRealtimeSafePlugins;
+        auto transientPlugins = nonRealtimeSafePlugins.transient();
         mutator (transientPlugins);
 
         // Re-compute the connections after the plugin map is altered each time
@@ -186,34 +188,64 @@ namespace timeoffaudio {
             }));
         }
 
-        plugins = transientPlugins.persistent();
-        diffAndNotifyListeners (previousPlugins, plugins);
+        nonRealtimeSafePlugins = transientPlugins.persistent();
+        auto result = synchronizationQueue.enqueue (nonRealtimeSafePlugins);
+        jassert(result);
+
+        diffAndNotifyListeners(previousNonRealtimeSafePlugins, nonRealtimeSafePlugins);
     }
 
+    /*
+     * Use this to write to the plugin graph from the non-realtime thread.
+     * This will not re-compute the connections of each node in the graph.
+     */
     template <>
     void PluginHost::withWriteAccess<PluginHost::PostUpdateAction::None> (
         const std::function<void (TransientPluginMap&)>& mutator) {
-        const auto previousPlugins = plugins;
-        auto transientPlugins      = previousPlugins.transient();
+        auto previousNonRealtimeSafePlugins = nonRealtimeSafePlugins;
+        auto transientPlugins = nonRealtimeSafePlugins.transient();
         mutator (transientPlugins);
-        plugins = transientPlugins.persistent();
-        diffAndNotifyListeners (previousPlugins, plugins);
+        nonRealtimeSafePlugins = transientPlugins.persistent();
+
+        auto result = synchronizationQueue.enqueue (nonRealtimeSafePlugins);
+        jassert(result);
+
+        diffAndNotifyListeners(previousNonRealtimeSafePlugins, nonRealtimeSafePlugins);
     }
 
+    /*
+     * Use this to write to the plugin graph from the non-realtime thread.
+     * This will re-compute the connections of each node in the graph.
+     */
     void PluginHost::withWriteAccess (const std::function<void (TransientPluginMap&)>& mutator) {
         withWriteAccess<PostUpdateAction::RefreshConnections> (mutator);
     }
 
-    void PluginHost::withReadOnlyAccess (const std::function<void (const PluginMap)>& accessor) const {
-        accessor (plugins);
+    /*
+     * Use this to access the plugin graph from the non-realtime thread, in a read-only fashion.
+     */
+    void PluginHost::withReadonlyAccess (const std::function<void (PluginMap)>& accessor) const {
+        accessor (nonRealtimeSafePlugins);
+    }
+
+    /*
+     * Use this to access the plugin graph from the realtime thread.
+     */
+    void PluginHost::withRealtimeAccess (const std::function<void (const PluginMap&)>& accessor) {
+        // Get the latest PluginMap submitted for the realtime thread
+        while (synchronizationQueue.try_dequeue (realtimeSafePlugins)) {}
+        // Access the realtime-safe copy of the plugin map
+        accessor (realtimeSafePlugins);
     }
 
     void PluginHost::startScan (const juce::String& format) {
         auto onScanProgress = [this] (float progress01, juce::String formatName, juce::String currentPlugin) {
+            const juce::ScopedReadLock lock (listenersLock);
             listeners.call (&Listener::scanProgressed, progress01, formatName, currentPlugin);
         };
 
         auto onScanFinished = [this]() {
+            const juce::ScopedReadLock lock (listenersLock);
             currentScan.reset();
             listeners.call (&Listener::scanFinished);
         };
@@ -258,9 +290,15 @@ namespace timeoffaudio {
         knownPlugins.removeType (pluginToClear);
     }
 
-    void PluginHost::addPluginHostListener (Listener* listener) { listeners.add (listener); }
+    void PluginHost::addPluginHostListener (Listener* listener) {
+        juce::ScopedWriteLock lock (listenersLock);
+        listeners.add (listener);
+    }
 
-    void PluginHost::removePluginHostListener (Listener* listener) { listeners.remove (listener); }
+    void PluginHost::removePluginHostListener (Listener* listener) {
+        juce::ScopedWriteLock lock (listenersLock);
+        listeners.remove (listener);
+    }
 
     void PluginHost::changeListenerCallback (juce::ChangeBroadcaster* source) {
         if (source == &knownPlugins) {
@@ -271,11 +309,16 @@ namespace timeoffaudio {
                 jassert (writeSuccessful);
             }
 
-            listeners.call (&Listener::availablePluginsUpdated, knownPlugins.getTypes());
+            {
+                const juce::ScopedReadLock lock (listenersLock);
+                listeners.call (&Listener::availablePluginsUpdated, knownPlugins.getTypes());
+            }
         }
     }
 
-    void PluginHost::process (const Plugin& plugin, juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages) {
+    void PluginHost::process (const Plugin& plugin,
+        juce::AudioBuffer<float>& buffer,
+        juce::MidiBuffer& midiMessages) /* context: realtime */ {
         const auto instance        = plugin.instance.get();
         const auto bypassParameter = instance->getBypassParameter();
 
@@ -296,7 +339,7 @@ namespace timeoffaudio {
         blockSize  = newBlockSize;
         playhead   = newPlayhead;
 
-        withReadOnlyAccess ([&] (const PluginMap& pluginMap) {
+        withWriteAccess<PluginHost::PostUpdateAction::None> ([&] (const PluginHost::TransientPluginMap& pluginMap) {
             for (auto& [key, pluginBox] : pluginMap) {
                 const auto instance = pluginBox.get().instance.get();
 
@@ -384,7 +427,7 @@ namespace timeoffaudio {
         });
     }
 
-    choc::value::Value PluginHost::getPluginState (KeyType key, const PluginMap pluginMap) const {
+    choc::value::Value PluginHost::getPluginState (KeyType key, const PluginMap& pluginMap) const {
         auto pluginState = choc::value::createObject ("PluginState");
 
         if (const auto pluginBox = pluginMap.find (key)) {
@@ -409,14 +452,13 @@ namespace timeoffaudio {
     choc::value::Value PluginHost::getAllPluginsState() const {
         choc::value::Value allPluginsState = choc::value::createEmptyArray();
 
-        withReadOnlyAccess ([&] (const PluginMap& pluginMap) {
-            for (auto& [key, pluginBox] : pluginMap) allPluginsState.addArrayElement (getPluginState (key, pluginMap));
-        });
+        for (auto& [key, pluginBox] : nonRealtimeSafePlugins)
+            allPluginsState.addArrayElement (getPluginState (key, nonRealtimeSafePlugins));
 
         return allPluginsState;
     }
 
-    void PluginHost::loadPluginFromState (TransientPluginMap& pluginMap, const choc::value::Value pluginState) {
+    void PluginHost::loadPluginFromState (TransientPluginMap& pluginMap, const choc::value::Value& pluginState) {
         const auto key = pluginState["key"].toString();
 
         if (const auto pluginDescriptionXml = juce::XmlDocument::parse (pluginState["description"].toString())) {
@@ -424,66 +466,64 @@ namespace timeoffaudio {
                 juce::MemoryBlock stateToLoad;
                 stateToLoad.fromBase64Encoding (pluginState["encoded_state"].toString());
                 createPluginInstance (pluginMap, pluginDescription, key, { .openAutomatically = false }, stateToLoad);
-                return;
+                return ;
             }
         }
 
         timeoffaudio_assert (false);
     }
 
-    void PluginHost::loadAllPluginsFromState (choc::value::Value allPluginsState) {
+    void PluginHost::loadAllPluginsFromState (const choc::value::Value& allPluginsState) {
         withWriteAccess<PluginHost::PostUpdateAction::RefreshConnections> ([&] (TransientPluginMap& pluginMap) {
             for (const auto pluginState : allPluginsState)
                 loadPluginFromState (pluginMap, choc::value::Value (pluginState));
+
         });
     }
 
     juce::Array<juce::AudioProcessorParameter*> PluginHost::getParameters (KeyType key) const {
-        // Filter out parameters that start with "midi cc", "internal", or "bypass", etc
-        if (const auto pluginBox = plugins.find (key)) {
-            auto parameters = pluginBox->get().instance->getParameters();
+        juce::Array<juce::AudioProcessorParameter*> parameters;
 
-            parameters.removeIf ([] (const juce::AudioProcessorParameter* param) {
-                for (const auto prefix : { "midi cc", "internal", "bypass", "reserved", "in", "out", "-" })
-                    if (param->getName (1024).toLowerCase().startsWith (prefix)) return true;
+        withReadonlyAccess ([&] (const PluginMap& pluginMap) {
+            // Filter out parameters that start with "midi cc", "internal", or "bypass", etc
+            if (const auto pluginBox = pluginMap.find (key)) {
+                parameters = pluginBox->get().instance->getParameters();
 
-                return false;
-            });
+                parameters.removeIf ([] (const juce::AudioProcessorParameter* param) {
+                    for (const auto prefix : { "midi cc", "internal", "bypass", "reserved", "in", "out", "-" })
+                        if (param->getName (1024).toLowerCase().startsWith (prefix)) return true;
 
-            return parameters;
-        }
+                    return false;
+                });
+            }
+        });
 
-        return {};
+        return parameters;
     }
 
     juce::AudioProcessorParameter* PluginHost::getParameter (KeyType key, int parameterIndex) const {
-        juce::AudioProcessorParameter* parameter = nullptr;
+        // TODO: this is not very efficient, but it's the simplest way to get the key
+        // figure out how to get the key from the PluginMap without scanning the whole map
+        const auto pluginBox = nonRealtimeSafePlugins.find (key);
+        if (!pluginBox) return nullptr;
 
-        withReadOnlyAccess ([&] (const PluginMap& pluginMap) {
-            // TODO: this is not very efficient, but it's the simplest way to get the key
-            // figure out how to get the key from the PluginMap without scanning the whole map
-            const auto pluginBox = pluginMap.find (key);
-            if (!pluginBox) return;
+        const auto pluginInstance = pluginBox->get().instance.get();
+        if (!pluginInstance) return nullptr;
 
-            const auto pluginInstance = pluginBox->get().instance.get();
-            if (!pluginInstance) return;
-            parameter = pluginInstance->getHostedParameter (parameterIndex);
-        });
-
-        return parameter;
+        return pluginInstance->getHostedParameter (parameterIndex);
     }
 
-    void PluginHost::beginChangeGestureForParameter (const KeyType& key, const int parameterIndex) {
+    void PluginHost::beginChangeGestureForParameter (const KeyType& key, const int parameterIndex) const {
         if (const auto parameter = getParameter (key, parameterIndex)) return parameter->beginChangeGesture();
         // TODO: add error notification here
     }
 
-    void PluginHost::endChangeGestureForParameter (const KeyType& key, const int parameterIndex) {
+    void PluginHost::endChangeGestureForParameter (const KeyType& key, const int parameterIndex) const {
         if (const auto parameter = getParameter (key, parameterIndex)) return parameter->endChangeGesture();
         // TODO: add error notification here
     }
 
-    void PluginHost::setValueForParameter (const KeyType& key, const int parameterIndex, const float value) {
+    void PluginHost::setValueForParameter (const KeyType& key, const int parameterIndex, const float value) const {
         if (const auto parameter = getParameter (key, parameterIndex)) return parameter->setValue (value);
         // TODO: add error notification here
     }
@@ -502,12 +542,16 @@ namespace timeoffaudio {
         const auto pluginInstance = dynamic_cast<juce::AudioPluginInstance*> (processor);
         if (!pluginInstance) return;
 
-        withReadOnlyAccess ([&] (const PluginMap& pluginMap) {
+        withReadonlyAccess ([&] (const PluginMap& pluginMap) {
             // TODO: this is not very efficient, but it's the simplest way to get the key
             // figure out how to get the key from the PluginMap without scanning the whole map
             for (auto [key, pluginBox] : pluginMap) {
                 if (pluginBox.get().instance.get() == pluginInstance) {
-                    listeners.call (&Listener::pluginInstanceParameterChanged, key, parameterIndex, newValue);
+                    {
+                        const juce::ScopedReadLock lock (listenersLock);
+                        listeners.call (&Listener::pluginInstanceParameterChanged, key, parameterIndex, newValue);
+                    }
+
                     break;
                 }
             }
@@ -515,7 +559,12 @@ namespace timeoffaudio {
     }
 
     void PluginHost::audioProcessorChanged (juce::AudioProcessor*, const juce::AudioProcessor::ChangeDetails& details) {
-        if (details.latencyChanged) listeners.call (&Listener::latenciesChanged);
+        if (!details.latencyChanged) return;
+
+        {
+            const juce::ScopedReadLock lock (listenersLock);
+            listeners.call (&Listener::latenciesChanged);
+        }
     }
 
     void PluginHost::audioProcessorParameterChangeGestureBegin (juce::AudioProcessor*, int) {}
@@ -523,7 +572,7 @@ namespace timeoffaudio {
 
     void PluginHost::debugPrintState() const {
         DBG ("=============================== Plugin Host State ===============================");
-        withReadOnlyAccess ([&] (const PluginMap& pluginMap) {
+        withReadonlyAccess ([&] (const PluginMap& pluginMap) {
             DBG ("Number of plugins: " + juce::String (pluginMap.size()));
             for (const auto& [key, pluginBox] : pluginMap) {
                 if (const auto instance = pluginBox->instance) {

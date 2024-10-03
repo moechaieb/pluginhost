@@ -1,16 +1,15 @@
-// project: common
-
 #pragma once
+
 #include "PluginScan.h"
 #include "PluginWindow.h"
 #include <choc/containers/choc_Value.h>
+#include <imagiro_util/imagiro_util.h>
 #include <immer/algorithm.hpp>
 #include <immer/box.hpp>
 #include <immer/map.hpp>
 #include <immer/map_transient.hpp>
 #include <immer/set.hpp>
 #include <juce_audio_processors/juce_audio_processors.h>
-#include <memory>
 
 namespace timeoffaudio {
     class PluginHost : private juce::ChangeListener, private juce::AudioProcessorListener {
@@ -88,7 +87,7 @@ namespace timeoffaudio {
 
         // Plugin management
         void createPluginInstance (TransientPluginMap&,
-            const juce::PluginDescription pluginDescription,
+            juce::PluginDescription pluginDescription,
             KeyType key,
             timeoffaudio::PluginWindow::Options options = {},
             const juce::MemoryBlock& initialState       = juce::MemoryBlock());
@@ -109,16 +108,9 @@ namespace timeoffaudio {
         template <PostUpdateAction action>
         void withWriteAccess (const std::function<void (TransientPluginMap&)>& mutator);
 
-        /*
-            PluginMap is passed by value to implicitly create a copy of the PluginMap inside the lambda
-            This is useful for read-only access to the PluginMap without the need for locking
-            the PluginMap.
+        void withReadonlyAccess (const std::function<void (PluginMap)>& accessor) const;
 
-            Even if another thread updates the PluginMap, the copy inside the lambda will not be
-            affected. It will be out-of-date technically, but that's okay since the next time the lambda
-            is called, the PluginMap will be a fresh copy anyway.
-        */
-        void withReadOnlyAccess (const std::function<void (const PluginMap)>& accessor) const;
+        void withRealtimeAccess (const std::function<void (const PluginMap&)>& accessor);
 
         void traversePluginsFrom (KeyType key, std::function<void (Plugin)> visitor) const;
 
@@ -149,9 +141,9 @@ namespace timeoffaudio {
 
         // Plugin parameters
         juce::Array<juce::AudioProcessorParameter*> getParameters (KeyType key) const;
-        void beginChangeGestureForParameter (const KeyType& key, int parameterIndex);
-        void endChangeGestureForParameter (const KeyType& key, int parameterIndex);
-        void setValueForParameter (const KeyType& key, int parameterIndex, float value);
+        void beginChangeGestureForParameter (const KeyType& key, int parameterIndex) const;
+        void endChangeGestureForParameter (const KeyType& key, int parameterIndex) const;
+        void setValueForParameter (const KeyType& key, int parameterIndex, float value) const;
         juce::String getDisplayValueForParameter (const KeyType& key, int parameterIndex, float value) const;
         void audioProcessorParameterChanged (juce::AudioProcessor* processor,
             int parameterIndex,
@@ -166,25 +158,30 @@ namespace timeoffaudio {
     protected:
         juce::KnownPluginList knownPlugins;
         std::unique_ptr<timeoffaudio::PluginScan> currentScan { nullptr };
-        void prepare (const int newSampleRate, const int newBlockSize, juce::AudioPlayHead* newPlayhead = nullptr);
+        void prepare (int newSampleRate, int newBlockSize, juce::AudioPlayHead* newPlayhead = nullptr);
 
         // Plugin persistence
-        choc::value::Value getPluginState (KeyType key, const PluginMap pluginMap) const;
+        choc::value::Value getPluginState (KeyType key, const PluginMap& pluginMap) const;
         choc::value::Value getAllPluginsState() const;
 
-        void loadPluginFromState (TransientPluginMap& pluginMap, const choc::value::Value pluginState);
-        void loadAllPluginsFromState (choc::value::Value allPluginsState);
+        void loadPluginFromState (TransientPluginMap& pluginMap, const choc::value::Value& pluginState);
+        void loadAllPluginsFromState (const choc::value::Value& allPluginsState);
 
         virtual juce::RangedAudioParameter* getEnabledParameterForKey (KeyType key) { return nullptr; }
 
     private:
         juce::File pluginListFile;
+        juce::ReadWriteLock listenersLock;
 
         int sampleRate;
         int blockSize;
         juce::AudioPlayHead* playhead;
 
-        PluginMap plugins;
+        PluginMap realtimeSafePlugins;
+        PluginMap nonRealtimeSafePlugins;
+        moodycamel::ReaderWriterQueue<PluginMap> synchronizationQueue { 100 };
+
+
         ConnectionsRefreshFn getConnectionsFor;
 
         juce::AudioPluginFormatManager formatManager;
@@ -198,21 +195,35 @@ namespace timeoffaudio {
                 newPlugins,
                 immer::make_differ (
                     [&] (const PluginMap::value_type& added) {
+                        const juce::ScopedReadLock lock (listenersLock);
                         listeners.call (
                             &Listener::pluginInstanceLoadSuccessful, added.first, added.second->instance.get());
                     },
                     [&] (const PluginMap::value_type& removed) {
+                        const juce::ScopedReadLock lock (listenersLock);
                         listeners.call (
                             &Listener::pluginInstanceDeleted, removed.first, removed.second->instance.get());
                     },
                     [&] (const PluginMap::value_type& changedFrom, const PluginMap::value_type& changedTo) {
-                        // Notify listeners that the old plugin at the updated key is deleted
-                        listeners.call (
-                            &Listener::pluginInstanceDeleted, changedFrom.first, changedFrom.second->instance.get());
+                        const juce::ScopedReadLock lock (listenersLock);
 
-                        // Notify listeners that the new plugin at the updated key is loaded
-                        listeners.call (
-                            &Listener::pluginInstanceLoadSuccessful, changedTo.first, changedTo.second->instance.get());
+                        const auto& [changedFromKey, changedFromPluginBox] = changedFrom;
+                        const auto& [changedToKey, changedToPluginBox]     = changedTo;
+
+                        if (changedFromKey != changedToKey) {
+                            // Notify listeners that the old plugin at the updated key is deleted
+                            listeners.call (
+                                &Listener::pluginInstanceDeleted, changedFromKey, changedFromPluginBox->instance.get());
+
+                            // Notify listeners that the new plugin at the updated key is loaded
+                            return listeners.call (&Listener::pluginInstanceLoadSuccessful,
+                                changedTo.first,
+                                changedTo.second->instance.get());
+                        }
+
+                        // If we're here, it means a plugin has been updated in-place, i.e. its window was opened,
+                        // its connections have been updated, etc
+                        // TODO: add other listener notifications here for in-place plugin updates as needed
                     }));
         }
 
