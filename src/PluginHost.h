@@ -80,7 +80,7 @@ namespace timeoffaudio {
             });
         ~PluginHost() override;
 
-        void process (const Plugin& plugin, juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages);
+        void process (const Plugin& plugin, juce::AudioBuffer<float>& allBusesBuffer, juce::MidiBuffer& midiMessages);
 
         void addPluginHostListener (Listener* listener);
         void removePluginHostListener (Listener* listener);

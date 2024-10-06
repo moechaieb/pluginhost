@@ -244,14 +244,21 @@ namespace timeoffaudio {
     }
 
     void PluginHost::process (const Plugin& plugin,
-        juce::AudioBuffer<float>& buffer,
+        juce::AudioBuffer<float>& allBusesBuffer,
         juce::MidiBuffer& midiMessages) /* context: realtime */ {
         const auto instance = plugin.instance.get();
+
+        // If the plugin instance accepts side chain input, pass it the entire input buffer
+        // Otherwise, explicitly get the main bus buffer out of the input buffer
+        juce::AudioBuffer<float> bufferToPass = allBusesBuffer;
+        if(instance->getChannelCountOfBus(true, 1) == 0) {
+            bufferToPass = instance->getBusBuffer(allBusesBuffer, true, 0);
+        }
 
         if (const auto bypassParameter = instance->getBypassParameter(); !bypassParameter) {
             // When getBypassParameter() returns a nullptr, we need to bypass the plugin
             // by calling processBlockBypassed
-            instance->processBlockBypassed (buffer, midiMessages);
+            instance->processBlockBypassed (bufferToPass, midiMessages);
         } else {
             // When getBypassParameter() returns a valid pointer, we need to
             // set the bypass parameter, and process the plugin normally via processBlock
@@ -264,7 +271,7 @@ namespace timeoffaudio {
                 jassertfalse;
             }
 
-            instance->processBlock (buffer, midiMessages);
+            instance->processBlock (bufferToPass, midiMessages);
         }
     }
 
