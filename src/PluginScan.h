@@ -44,7 +44,10 @@ namespace timeoffaudio {
 
         void abort() const { finish(); }
         [[nodiscard]] float getProgress() const { return directoryScanner->getProgress(); }
-        [[nodiscard]] juce::String getCurrentPlugin() const { return pluginBeingScanned; }
+        [[nodiscard]] juce::String getCurrentPlugin() const
+        {
+            return pluginBeingScanned.fromLastOccurrenceOf("\\", false, true);
+        }
         [[nodiscard]] juce::String getFormatName() const { return formatToScan.getName(); }
 
     private:
@@ -80,7 +83,7 @@ namespace timeoffaudio {
         bool scanNextPlugin() {
             // This check is important because it allows the scan to be aborted mid-way through
             if (directoryScanner->scanNextFile (true, pluginBeingScanned)) {
-                onScanProgress ((float) getProgress(), formatToScan.getName(), pluginBeingScanned);
+                onScanProgress ((float) getProgress(), formatToScan.getName(), pluginBeingScanned.fromLastOccurrenceOf("\\", false, true));
                 return true;
             }
             return false;
