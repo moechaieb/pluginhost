@@ -12,7 +12,10 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 
 namespace timeoffaudio {
-    class PluginHost : private juce::ChangeListener, private juce::AudioProcessorListener, private juce::Timer {
+    class PluginHost : private juce::ChangeListener,
+                       private juce::AudioProcessorListener,
+                       private juce::Timer,
+                       private juce::ComponentListener {
     public:
         using KeyType = std::string;
 
@@ -30,10 +33,11 @@ namespace timeoffaudio {
                 int /*parameterIndex*/,
                 float /*newValue*/) {}
             virtual void latenciesChanged() {}
-
-            // TODO: these two are not used anywhere at the moment
-            virtual void pluginInstanceUpdated (PluginHost::KeyType /*uuid*/, juce::AudioPluginInstance* /*plugin*/) {}
             virtual void pluginInstanceLoadFailed (PluginHost::KeyType /*uuid*/, std::string /*error*/) {}
+            virtual void pluginWindowUpdated (PluginHost::KeyType, PluginWindow::UpdateType) {}
+
+            // TODO: this is not used anywhere at the moment
+            virtual void pluginInstanceUpdated (PluginHost::KeyType /*uuid*/, juce::AudioPluginInstance* /*plugin*/) {}
         };
 
         struct Plugin {
@@ -41,7 +45,8 @@ namespace timeoffaudio {
 
             std::shared_ptr<juce::AudioPluginInstance> instance;
             std::shared_ptr<PluginWindow> window;
-            juce::RangedAudioParameter* enabledParameter = nullptr;
+            PluginWindow::UpdateType lastWindowStateUpdate = PluginWindow::UpdateType::None;
+            juce::RangedAudioParameter* enabledParameter   = nullptr;
             ConnectionList connections;
 
             Plugin() = default;
@@ -69,18 +74,29 @@ namespace timeoffaudio {
                 : instance (std::move (inst)), window (std::move (win)), enabledParameter (enabledParameter) {}
         };
 
-        using PluginMap            = immer::map<KeyType, immer::box<Plugin>>;
-        using TransientPluginMap   = PluginMap::transient_type;
-        using ConnectionsRefreshFn = std::function<Plugin::ConnectionList (KeyType, const TransientPluginMap&)>;
+        using PluginMap             = immer::map<KeyType, immer::box<Plugin>>;
+        using TransientPluginMap    = PluginMap::transient_type;
+        using ConnectionsRefreshFn  = std::function<Plugin::ConnectionList (KeyType, const TransientPluginMap&)>;
+        using GetEnabledParameterFn = std::function<juce::RangedAudioParameter*(KeyType)>;
 
         explicit PluginHost (
             juce::File pluginListFile,
             ConnectionsRefreshFn connectionFactory = [] (KeyType, const TransientPluginMap&) -> Plugin::ConnectionList {
                 return {};
+            },
+            GetEnabledParameterFn enabledParameterFactory = [] (KeyType) -> juce::RangedAudioParameter* {
+                return nullptr;
             });
         ~PluginHost() override;
 
+        // Plugin persistence
+        choc::value::Value getPluginState (KeyType key, const PluginMap& pluginMap) const;
+        choc::value::Value getAllPluginsState() const;
+        void loadPluginFromState (TransientPluginMap& pluginMap, const choc::value::Value& pluginState);
+        void loadAllPluginsFromState (const choc::value::Value& allPluginsState);
+
         void process (const Plugin& plugin, juce::AudioBuffer<float>& allBusesBuffer, juce::MidiBuffer& midiMessages);
+        void prepare (int newSampleRate, int newBlockSize, juce::AudioPlayHead* newPlayhead = nullptr);
 
         void addPluginHostListener (Listener* listener);
         void removePluginHostListener (Listener* listener);
@@ -112,7 +128,7 @@ namespace timeoffaudio {
 
             auto previousNonRealtimeSafePlugins = nonRealtimeSafePlugins;
             auto transientPlugins               = nonRealtimeSafePlugins.transient();
-            std::forward<NonRealtimeMutator>(mutator) (transientPlugins);
+            std::forward<NonRealtimeMutator> (mutator) (transientPlugins);
 
             // Re-compute the connections after the plugin map is altered each time
             // TODO: Can be optimised via a custom differ:
@@ -150,7 +166,8 @@ namespace timeoffaudio {
             assertMessageThread();
 
             // Access the non-realtime-safe copy of the plugin map, which is set to const& to ensure it's read-only
-            std::forward<NonRealtimeReadonlyAccessor> (accessor) (static_cast<const PluginMap&>(nonRealtimeSafePlugins));
+            std::forward<NonRealtimeReadonlyAccessor> (accessor) (
+                static_cast<const PluginMap&> (nonRealtimeSafePlugins));
         }
 
         /*
@@ -165,7 +182,7 @@ namespace timeoffaudio {
             }
 
             // Access the realtime-safe copy of the plugin map, which is set to const& to ensure it's read-only
-            std::forward<RealtimeAccessor> (accessor) (static_cast<const PluginMap&>(realtimeSafePlugins));
+            std::forward<RealtimeAccessor> (accessor) (static_cast<const PluginMap&> (realtimeSafePlugins));
 
             if (isNewCopy) {
                 auto result = deallocationQueue.try_enqueue (realtimeSafePlugins);
@@ -216,21 +233,9 @@ namespace timeoffaudio {
 
         void debugPrintState() const;
 
-    protected:
+    private:
         juce::KnownPluginList knownPlugins;
         std::unique_ptr<timeoffaudio::PluginScan> currentScan { nullptr };
-        void prepare (int newSampleRate, int newBlockSize, juce::AudioPlayHead* newPlayhead = nullptr);
-
-        // Plugin persistence
-        choc::value::Value getPluginState (KeyType key, const PluginMap& pluginMap) const;
-        choc::value::Value getAllPluginsState() const;
-
-        void loadPluginFromState (TransientPluginMap& pluginMap, const choc::value::Value& pluginState);
-        void loadAllPluginsFromState (const choc::value::Value& allPluginsState);
-
-        virtual juce::RangedAudioParameter* getEnabledParameterForKey (KeyType key) { return nullptr; }
-
-    private:
         juce::File pluginListFile;
         juce::ReadWriteLock listenersLock;
 
@@ -243,12 +248,27 @@ namespace timeoffaudio {
         moodycamel::ReaderWriterQueue<PluginMap> deallocationQueue { 100 };
 
         ConnectionsRefreshFn getConnectionsFor;
+        GetEnabledParameterFn getEnabledParameterFor;
 
         juce::AudioPluginFormatManager formatManager;
         juce::ListenerList<Listener> listeners;
         void changeListenerCallback (juce::ChangeBroadcaster* source) override;
 
         juce::AudioProcessorParameter* getParameter (KeyType key, int parameterIndex) const;
+
+        // Plugin Window Visibility Callback
+        // This callback is decoupled from the immer persistence lifecycle, so it likely will be out of sync
+        // i.e. listeners will get notified about a window opening/closing before that is reflected in the canonical
+        // PluginMap state
+        // This is because I was not able to get diffing to work properly on window states, likely because the window
+        // field in the Plugin struct is a pointer and that obstructs value semantics (i.e. equality operator)
+        void componentVisibilityChanged (juce::Component& component) override {
+            if (const auto pluginWindow = dynamic_cast<timeoffaudio::PluginWindow*> (&component)) {
+                listeners.call (&Listener::pluginWindowUpdated,
+                    pluginWindow->getPluginInstanceKey(),
+                    pluginWindow->isVisible() ? PluginWindow::UpdateType::Opened : PluginWindow::UpdateType::Closed);
+            }
+        }
 
         void diffAndNotifyListeners (const PluginMap& previousPlugins, const PluginMap& newPlugins) {
             immer::diff (previousPlugins,
@@ -281,8 +301,7 @@ namespace timeoffaudio {
                                 changedTo.second->instance.get());
                         }
 
-                        // If we're here, it means a plugin has been updated in-place, i.e. its window was opened,
-                        // its connections have been updated, etc
+                        // If we're here, it means a plugin has been updated in-place, i.e. its connections have been updated, etc
                         // TODO: add other listener notifications here for in-place plugin updates as needed
                     }));
         }
@@ -303,6 +322,9 @@ namespace timeoffaudio {
 
         static void assertMessageThread() {
 #if JUCE_DEBUG
+            // Pluginval can sort of do whatever it likes, it doesn't follow a message/audio thread layout
+            if (const juce::PluginHostType currentDAW; currentDAW.isPluginval() || currentDAW.isAUVal()) return;
+
             if (const auto messageManager = juce::MessageManager::getInstanceWithoutCreating();
                 !messageManager->isThisTheMessageThread())
                 jassertfalse;

@@ -1,58 +1,91 @@
 #pragma once
+#include "PluginHost.h"
+#include "PluginWindowLookAndFeel.h"
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_gui_basics/juce_gui_basics.h>
+
 /**
     A desktop window containing a plugin's GUI.
 */
 namespace timeoffaudio {
     class PluginWindow final : public juce::DocumentWindow {
     public:
-        enum class Type { normal = 0, generic, debug, numTypes };
+        enum class Type { normal = 0, generic };
 
         struct Options {
-            int xPos = 0;
-            int yPos = 0;
-            bool openAutomatically = true;
-            std::string titlePrefix = JucePlugin_Name;
+            int xPos, yPos = 0;
+            bool openAutomatically                      = true;
+            std::string titlePrefix                     = JucePlugin_Name;
+            std::optional<std::string> backgroundHexRGB = "ff000000", textColourHexRGB = "ffffffff";
         };
 
-        explicit PluginWindow (juce::AudioPluginInstance& pI,
-            const int xPos = 100,
-            const int yPos = 100, Type t = Type::normal, const std::string& windowTitlePrefix = JucePlugin_Name)
-            : DocumentWindow (juce::String(windowTitlePrefix) + ": " + pI.getPluginDescription().name.toLowerCase(),
+        static const Options DEFAULT_OPTIONS;
+
+        enum class UpdateType { None = 0, Opened, Closed };
+
+        explicit PluginWindow (const std::string& key,
+            juce::AudioPluginInstance& pI,
+            const Type t           = Type::normal,
+            const Options& options = DEFAULT_OPTIONS)
+            : pluginInstanceKey (key),
+              DocumentWindow (juce::String (options.titlePrefix) + ": " + pI.getPluginDescription().name.toLowerCase(),
                   juce::Colours::black,
                   DocumentWindow::closeButton),
               pluginInstance (pI),
               type (t) {
+            jassert (!key.empty());
+            jassert (!pluginInstanceKey.empty());
+
+            if (options.textColourHexRGB.has_value()) {
+                pluginWindowLookAndFeel.setTitleBarTextColour (
+                    juce::Colour::fromString (options.textColourHexRGB.value()));
+            }
+
+            if (options.backgroundHexRGB.has_value()) {
+                pluginWindowLookAndFeel.setTitleBarBackgroundColour (
+                    juce::Colour::fromString (options.backgroundHexRGB.value()));
+            }
+
             if (auto* ui = createProcessorEditor (pluginInstance, type)) {
                 setContentOwned (ui, true);
                 setResizable (ui->isResizable(), false);
             }
-            setConstrainer (&constrainer);
 
-            setTopLeftPosition (xPos, yPos);
-            setAlwaysOnTop (true);
+            setConstrainer (&constrainer);
+            setTopLeftPosition (options.xPos, options.yPos);
+
+            setLookAndFeel (&pluginWindowLookAndFeel);
+            if (currentDawRequiresPluginWindowsInFront()) setAlwaysOnTop (true);
+
             Component::setVisible (true);
         }
 
-        ~PluginWindow() override = default;
+        ~PluginWindow() override {
+            setLookAndFeel (nullptr);
+            clearContentComponent();
+        }
 
         void closeButtonPressed() override { setVisible (false); }
 
-        static std::string getLastXProp (Type type) { return "uiLastX_" + getTypeName (type); }
-        static std::string getLastYProp (Type type) { return "uiLastY_" + getTypeName (type); }
-        static std::string getOpenProp (Type type) { return "uiopen_" + getTypeName (type); }
-
-        void setWindowTitlePrefix (std::string newPrefix) {
-            if(newPrefix.empty())
-                setTitle (juce::String(JucePlugin_Name) + ": " + pluginInstance.getPluginDescription().name.toLowerCase());
+        void setWindowTitlePrefix (const std::string& newPrefix) {
+            if (newPrefix.empty())
+                setTitle (
+                    juce::String (JucePlugin_Name) + ": " + pluginInstance.getPluginDescription().name.toLowerCase());
             else
-                setTitle (juce::String(newPrefix) + ": " + pluginInstance.getPluginDescription().name.toLowerCase());
+                setTitle (juce::String (newPrefix) + ": " + pluginInstance.getPluginDescription().name.toLowerCase());
+        }
+
+        std::string getPluginInstanceKey() const { return pluginInstanceKey; }
+        void setPluginInstanceKey (const std::string& newPluginInstanceKey) {
+            pluginInstanceKey = newPluginInstanceKey;
         }
 
     private:
+        std::string pluginInstanceKey;
         juce::AudioPluginInstance& pluginInstance;
         const Type type;
+        timeoffaudio::PluginWindowLookAndFeel pluginWindowLookAndFeel;
+        const juce::PluginHostType currentDAW;
 
         class DecoratorConstrainer final : public juce::BorderedComponentBoundsConstrainer {
         public:
@@ -65,7 +98,7 @@ namespace timeoffaudio {
 
             juce::BorderSize<int> getAdditionalBorder() const override {
                 const auto nativeFrame = [&]() -> juce::BorderSize<int> {
-                    if (auto* peer = window.getPeer())
+                    if (const auto* peer = window.getPeer())
                         if (const auto frameSize = peer->getFrameSizeIfPresent()) return *frameSize;
 
                     return {};
@@ -97,8 +130,6 @@ namespace timeoffaudio {
                 return result;
             }
 
-            // if (type == PluginWindow::Type::debug) return new PluginDebugWindow (processor);
-
             jassertfalse;
             return {};
         }
@@ -109,12 +140,25 @@ namespace timeoffaudio {
                     return "Normal";
                 case Type::generic:
                     return "Generic";
-                case Type::debug:
-                    return "Debug";
-                case Type::numTypes:
                 default:
                     return {};
             }
+        }
+
+        /*
+         * Given different DAWs handle plugin windows differently, we need to conditionally set hosted plugin windows
+         * to be "always in front" (i.e. call setAlwaysInFront(true).
+         *
+         * The desired behaviour is that hosted plugin windows and the pluginhost's window (whether a standalone app
+         * or a plugin itself) always come to the front when focused, and don't hide each other even when in focus.
+         *
+         * This helper method ensures we can achieve that on all hosts.
+         */
+        bool currentDawRequiresPluginWindowsInFront() const {
+            if (currentDAW.getPluginLoadedAs() == juce::AudioProcessor::wrapperType_Standalone) return false;
+            if (currentDAW.isJUCEPluginHost()) return false;
+
+            return true;
         }
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PluginWindow)

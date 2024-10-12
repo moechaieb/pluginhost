@@ -1,6 +1,6 @@
 ## time off audio plugin host
 
-The `timeoffaudio::PluginHost` class provides primary interface for managing and interacting with audio plugins within a host application.
+The `timeoffaudio::PluginHost` class provides the primary interface for managing and interacting with audio plugins within a host application.
 
 ### basic architecture
 
@@ -12,16 +12,18 @@ The architecture of the plugin host revolves around several key classes and func
 
 ### usage
 
-All you need to do is inherit from the `timeoffaudio::PluginHost` class.
+Initialize the `timeoffaudio::PluginHost` as a member variable in your class:
 
 ```cpp
-class MyPluginHost : public timeoffaudio::PluginHost {
+class MyAudioProcessor {
 public:
-    MyPluginHost() : PluginHost() {
+    MyAudioProcessor() : pluginHost(juce::File("path/to/plugin/list/file")) {
         // Initialization code here
     }
 
-    // Implement required methods
+private:
+    timeoffaudio::PluginHost pluginHost;
+    // Other member variables
 };
 ```
 
@@ -29,94 +31,66 @@ public:
 
 The data model of the plugin host is built around the concept of plugins and their interactions. Key components include:
 
-- **PluginMap**: Stores all active plugin instances. This map is an immutable data data structure provided by the `immer` library, which allows for efficient and safe sharing of state across threads without needing locks. The map uses unique keys (`KeyType` which is typically a string) to identify each plugin instance. These keys serve as unique identifiers for each plugin within the host environment, allowing the implementer to manage and reference plugins effectively within their plugin graph or chain. The keys can be used to retrieve specific plugin instances, manage their state, or manipulate their position and connections within the overall plugin architecture.
+- **PluginMap**: Stores all active plugin instances. This map is an immutable data structure provided by the `immer` library, which allows for efficient and safe sharing of state across threads without needing locks. The map uses unique keys (`KeyType` which is typically a string) to identify each plugin instance.
 - **TransientPluginMap**: Used for temporary changes to the plugin instances. It is a mutable version of `PluginMap` that allows changes to be made before being committed back to the immutable `PluginMap`.
 - **Plugin**: Encapsulates an audio plugin instance along with its GUI window and connection information.
 
-
 ### plugin discovery
 
-Plugin discovery is managed by the `PluginScan` class, which supports asynchronous scanning of plugins across multiple threads. This class is integral to identifying available plugins and updating the host system with new or removed plugins. It provides several key functions and callbacks to enhance interaction and responsiveness:
+Plugin discovery is managed by the `PluginScan` class, which supports asynchronous scanning of plugins across multiple threads. Key functions include:
 
-- **startScan**: Initiates the scanning process for a specified plugin format. This function is useful for starting the scan based on user input or system initialization.
-- **abortOngoingScan**: Allows for the cancellation of any currently running scan, providing a way to stop the operation gracefully if needed.
-- **isScanInProgress**: Returns a boolean indicating whether a scan is currently active, which can be used to update UI elements or manage system states.
-- **getScanStatus**: Provides a snapshot of the current scan progress, including which plugins are being scanned and the overall progress percentage.
+- **startScan**: Initiates the scanning process for a specified plugin format.
+- **abortOngoingScan**: Allows for the cancellation of any currently running scan.
+- **isScanInProgress**: Returns a boolean indicating whether a scan is currently active.
+- **getScanStatus**: Provides a snapshot of the current scan progress.
 
 ### access patterns
 
-There are a few key methods used to access and mutate the state of the plugin host. At the core of these access patterns is the concept of immutability. Due to this, it is always assumed that only one thread mutates plugin host state at a time, but N threads can read the state at the same time.
+The PluginHost class provides thread-safe access patterns for reading and writing plugin data. * A fundamental assumption made throughout the design is that the plugin map will only be modified by a single, non-realtime thread (typically the UI/message thread).*
 
-- **withWriteAccess**: Functions that require a  `TransientPluginMap` must be wrapped in a `withWriteAccess` call. This ensures that changes are made within a controlled scope, and the modified map is safely committed back as an immutable `PluginMap` at the end of the block. This method is used for operations like creating, deleting, or moving plugin instances.
-
-
-```cpp
-void PluginHost::deletePluginInstance (KeyType key) {
-    withWriteAccess ([&] (TransientPluginMap& pluginMap) { deletePluginInstance (pluginMap, key); });
-}
-```
-
-Most operations that mutate the plugin map have a version that takes a `TransientPluginMap` as an argument, which allows them to be chained arbitrarily and committed back to the immutable `PluginMap` at the end of the block in a transactional way.
-
-- **withReadOnlyAccess**: For operations that only need to read from the `PluginMap` without modifying it, `withReadOnlyAccess` is used. This method passes a constant copy of the `PluginMap` to the provided function, acting as a read-only snapshot of the plugin host state, which is thread-safe thanks to immer's immutable data model.
+- **withWriteAccess**: Used for operations that modify the plugin map from the non-realtime thread. It ensures changes are made within a controlled scope, safely committed back to the immutable `PluginMap`, then notifies listeners of the changes.
 
 ```cpp
-void PluginHost::withReadOnlyAccess (std::function<void (const PluginMap)> accessor) const {
-    accessor (plugins);
-}
-```
-
-- **process**: The `process` method is used to process audio through a specific plugin. It's important to note that this method must be wrapped in a `withReadOnlyAccess` call to ensure that the plugin is retrieved from a consistent snapshot view of the PluginHost. This approach guarantees thread-safety and prevents potential race conditions during audio processing.
-
-```cpp
-PluginHost::withReadOnlyAccess ([&] (const PluginMap plugins) {
-    if (auto pluginBox = plugins.find(pluginKey)) {
-        PluginHost::process(pluginBox->get(), buffer, midiMessages);
-    }
+pluginHost.withWriteAccess([&] (PluginHost::TransientPluginMap& pluginMap) {
+    // Modify pluginMap here
 });
 ```
 
-These access patterns ensure thread safety and data integrity by controlling how and when changes to the plugin map are made and committed, as well as providing a consistent view of the plugin state during audio processing.
+- **withReadonlyAccess**: Used for read-only operations on the plugin map from the non-realtime thread. It provides a consistent snapshot of the plugin state.
+
+```cpp
+pluginHost.withReadonlyAccess([&] (const PluginHost::PluginMap& pluginMap) {
+    // Read from pluginMap here
+});
+```
+
+- **withRealtimeAccess**: Used for accessing the plugin map from the realtime thread. It ensures thread-safe and realtime-safe access to the latest plugin state (as read-only).
+
+```cpp
+pluginHost.withRealtimeAccess([&] (const PluginHost::PluginMap& pluginMap) {
+    // Access pluginMap in realtime context here
+});
+```
 
 ### events / callbacks
 
-The `PluginHost::Listener` interface provides a set of callbacks that allow for real-time monitoring and response to various events within the plugin host environment. These callbacks are crucial for applications that need to react to changes in plugin status, configuration, or interaction. Here is a breakdown of each callback and its functionality:
+The `PluginHost::Listener` interface provides callbacks for various events:
 
-- **scanProgressed**: Triggered during a plugin scan to provide updates on the scan's progress. It reports the percentage completed, the format of the plugin being scanned, and the name of the current plugin. This is useful for updating a UI progress bar or providing user feedback during long operations.
+- **scanProgressed**: Updates on plugin scan progress.
+- **scanFinished**: Called when a plugin scan completes.
+- **availablePluginsUpdated**: Fired when the list of available plugins is updated.
+- **pluginInstanceLoadSuccessful**: Occurs when a plugin instance is successfully loaded.
+- **pluginInstanceLoadFailed**: Triggered if a plugin instance fails to load.
+- **pluginInstanceUpdated**: Called when an existing plugin instance undergoes a significant change.
+- **pluginInstanceDeleted**: Occurs when a plugin instance is removed.
+- **pluginInstanceParameterChanged**: Fired when a parameter within a plugin instance changes.
+- **latenciesChanged**: Called when the latency of one or more plugins changes.
+- **pluginWindowUpdated**: Triggered when a plugin window is opened or closed.
 
-- **scanFinished**: Called when a plugin scan completes. This can be used to perform cleanup, update UI elements, or trigger other processes that depend on the completion of the scan.
+### plugin windows
 
-- **availablePluginsUpdated**: Fired when the list of available plugins is updated. This could happen after a scan or when plugins are added or removed manually. It provides an updated list of plugin descriptions, allowing the host application to refresh its UI or internal data structures.
-
-- **pluginInstanceLoadSuccessful**: Occurs when a plugin instance is successfully loaded. It provides the unique identifier for the plugin and the instance itself, enabling the application to manage the plugin directly or update related data structures.
-
-- **pluginInstanceLoadFailed**: Triggered if a plugin instance fails to load. It includes the unique identifier and a string describing the error, which can be logged or displayed to the user.
-
-- **pluginInstanceUpdated**: Called when an existing plugin instance undergoes a significant change that might affect its operation or representation in the UI. This includes changes like parameter updates or internal state changes.
-
-- **pluginInstanceDeleted**: Occurs when a plugin instance is removed from the system. It provides the unique identifier and the instance itself, which can be used to update UI elements or internal mappings.
-
-- **pluginInstanceParameterChanged**: Fired when a parameter within a plugin instance changes. It reports the unique identifier of the plugin, the index of the parameter that changed, and the new value. This is essential for keeping UI elements like sliders or knobs in sync with the plugin's state.
-
-- **latenciesChanged**: Called when the latency of one or more plugins in the host changes. This can occur when plugins are added, removed, or their internal latency is modified. Applications can use this callback to update their latency compensation mechanisms or inform the user about changes in overall system latency.
-
-These callbacks form a comprehensive system for managing and responding to events within the plugin host, ensuring that applications can maintain accurate and up-to-date information about their plugins and react promptly to changes.
-
+The `PluginWindow` class manages the GUI for individual plugins. It provides options for customizing the appearance and behavior of plugin windows.
 
 ### coming soon
 
-Plugin graph support: define arbitrary plugin graphs, and PluginHost will help play it for you. At the moment, it's really up to the implementer to manage how they playback their plugin graph, by calling `withReadOnlyAccess` and then iterating over the plugins in the graph in the right order.
-
-For example, in dime, since I'm playing back N parallel plugin chains, I'm able to achieve that with:
-
-```cpp
-PluginHost::withReadOnlyAccess ([&] (const PluginHost::PluginMap& plugins) {
-    for (size_t i = 0; i < PLUGIN_GRAPH.size(); ++i)
-        for (size_t j = 0; j < PLUGIN_GRAPH[i].size(); ++j) {
-            if (plugins.count (PLUGIN_GRAPH[i][j]) == 0) break;
-
-            plugins.at (PLUGIN_GRAPH[i][j])
-                ->instance->processBlock (splitBuffersWithSidechain[i], midiBuffer);
-        }
-});
-```
+Future updates may include built-in support for defining and playing arbitrary plugin graphs.
