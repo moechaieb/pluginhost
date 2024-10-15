@@ -95,7 +95,7 @@ namespace timeoffaudio {
         void loadPluginFromState (TransientPluginMap& pluginMap, const choc::value::Value& pluginState);
         void loadAllPluginsFromState (const choc::value::Value& allPluginsState);
 
-        void process (const Plugin& plugin, juce::AudioBuffer<float>& allBusesBuffer, juce::MidiBuffer& midiMessages);
+        void process (const Plugin& plugin, juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages);
         void prepare (int newSampleRate, int newBlockSize, juce::AudioPlayHead* newPlayhead = nullptr);
 
         void addPluginHostListener (Listener* listener);
