@@ -15,9 +15,9 @@ PRODUCT_NAME "time off audio plugin scanner"
     COMPANY_NAME "time off audio"
     COMPANY_WEBSITE "https://timeoff.audio"
     COMPANY_EMAIL "support@timeoff.audio"
-    DESCRIPTION "Utility executable for finding plugins on the system"
+    DESCRIPTION "Utility executable for finding VST3 and AudioUnit plugins on the system"
     HARDENED_RUNTIME_ENABLED TRUE
-    HARDENED_RUNTIME_OPTIONS com.apple.security.cs.disable-library-validation
+    HARDENED_RUNTIME_OPTIONS com.apple.security.cs.allow-unsigned-executable-memory com.apple.security.cs.disable-library-validation com.apple.security.get-task-allow
 )
 
 target_sources(PluginScanner

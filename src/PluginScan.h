@@ -17,7 +17,7 @@ namespace timeoffaudio {
             juce::File& failedToLoadPluginsFolder,
             ScanProgressCallback oSP,
             ScanFinishedCallback oSF,
-            bool allowPluginsWhichRequireAsynchronousInstantiation = false,
+            bool allowPluginsWhichRequireAsynchronousInstantiation = true,
             int threads                                            = NUM_THREADS)
             : allowAsync (allowPluginsWhichRequireAsynchronousInstantiation),
               numThreads (threads),
