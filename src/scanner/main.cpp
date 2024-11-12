@@ -30,11 +30,17 @@ namespace timeoffaudio {
                     return;
                 }
 
+                juce::SystemStats::setApplicationCrashHandler(crashHandler);
+
                 DBG ("Initialised scanner worker and connected to coordinator");
                 worker = std::move (scannerWorker);
             }
 
-            static void crashHandler (void*) {}
+            static void crashHandler (void*) {
+                // Setting a custom crash handler that does nothing,
+                // simply to swallow the crash windows appearing on macOS
+                // TODO: log something
+            }
 
         private:
             std::unique_ptr<timeoffaudio::scanner::Worker> worker;

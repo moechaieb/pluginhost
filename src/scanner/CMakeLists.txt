@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(PluginScanner VERSION "0.0.3")
+project(PluginScanner VERSION "0.0.4")
 
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../../juce ${CMAKE_BINARY_DIR}/juce)
 
